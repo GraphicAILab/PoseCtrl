@@ -7,6 +7,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 from poseCtrl.data.dataset import load_base_points
 import cv2
+import numpy as np
 
 class VPmatrixEncoder(nn.Module):
     def __init__(self, input_channels=1, base_channels=64, output_size=(77, 77)):
@@ -141,13 +142,15 @@ class VPmatrixPointsV1(nn.Module):
     Output:
         base_points: [batch,77,768]
     """
-    def __init__(self, raw_base_points):
+    def __init__(self, raw_base_points,image_width = 512,image_height=512):
         super().__init__() 
         self.register_buffer("raw_base_points", raw_base_points)
+        self.image_width = image_width
+        self.image_height = image_height
 
     def forward(self, V_matrix, P_matrix):
         VP_matrix = torch.bmm(P_matrix, V_matrix)  # [batch, 4, 4]
-        points = self.raw_base_points.unsqueeze(0).expand(VP_matrix.shape[0], -1, -1)
+        points = self.raw_base_points.unsqueeze(0).expand(VP_matrix.shape[0], -1, -1).to('cuda')
         transformed_points = torch.bmm(points, VP_matrix.transpose(1, 2))  # [batch, 13860, 4]
         transformed_points[..., :3] = torch.where(
             transformed_points[..., 3:4] != 0,
@@ -155,7 +158,7 @@ class VPmatrixPointsV1(nn.Module):
             transformed_points[..., :3]  
         ) # [batch, 13860, 3]
         transformed_points = transformed_points[..., :3]
-        image_width, image_height = 512, 512
+        image_width, image_height = self.image_width, self.image_height
 
         screen_coords = transformed_points.clone()
         screen_coords[..., 0] = (screen_coords[..., 0] + 1) * 0.5 * image_width   # X: [-1,1] -> [0,512]
@@ -164,7 +167,7 @@ class VPmatrixPointsV1(nn.Module):
         screen_coords = screen_coords.round().long()  # [batch, 13860, 3]
 
         batch_size = screen_coords.shape[0]
-        tensor_images = torch.zeros((batch_size, image_height, image_width), dtype=torch.uint8)
+        tensor_images = torch.zeros((batch_size, 3, image_height, image_width), dtype=torch.uint8)
 
         for b in range(batch_size):
             pixels = screen_coords[b].cpu().numpy()
@@ -178,8 +181,9 @@ class VPmatrixPointsV1(nn.Module):
             dilated_image = cv2.dilate(inverted_array, kernel, iterations=1)  
             smoothed_image = cv2.GaussianBlur(dilated_image, (7, 7), 0)
             _, binary_mask = cv2.threshold(smoothed_image, 100, 255, cv2.THRESH_BINARY)
-            tensor_images[b] = torch.from_numpy(binary_mask)
-        return tensor_images      
+            binary_mask_3ch = np.stack([binary_mask] * 3, axis=-1)  # [512, 512, 3]
+            tensor_images[b] = torch.from_numpy(binary_mask_3ch).permute(2, 0, 1)
+        return tensor_images.float() / 255   
 
 # --------------------- Dataset & Testing ---------------------
 

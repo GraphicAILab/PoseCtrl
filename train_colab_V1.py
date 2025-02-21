@@ -113,7 +113,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=500,
+        default=2,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
