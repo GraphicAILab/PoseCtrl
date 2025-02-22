@@ -38,16 +38,9 @@ def parse_args():
     parser.add_argument(
         "--pretrained_pose_path",
         type=str,
-        default=None,
+        default='/content/drive/MyDrive/posectrl.bin',
         help="Path to pretrained  posectrl model. If not specified weights are initialized randomly.",
     )
-    # parser.add_argument(
-    #     "--data_json_file",
-    #     type=str,
-    #     default=None,
-    #     required=True,
-    #     help="Training data",
-    # )
     parser.add_argument(
         "--base_point_path",
         type=str,
@@ -100,7 +93,7 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=1e-2, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
-        "--train_batch_size", type=int, default=8, help="Batch size (per device) for the training dataloader."
+        "--train_batch_size", type=int, default=4, help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument(
         "--dataloader_num_workers",
@@ -113,7 +106,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=2,
+        default=500,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
@@ -162,8 +155,8 @@ class posectrl(nn.Module):
         point_tokens = self.image_proj_model_point(point_embeds)
         feature_tokens = self.image_proj_model(image_embeds)
         """ 修改:防止之后要加text """
-        if encoder_hidden_states:
-            encoder_hidden_states = torch.cat([point_tokens, feature_tokens, encoder_hidden_states], dim=1)
+        if encoder_hidden_states!=None:
+            encoder_hidden_states = torch.cat([encoder_hidden_states, point_tokens, feature_tokens], dim=1)
         else:
             encoder_hidden_states=torch.cat([point_tokens, feature_tokens], dim=1)
         # Predict the noise residual
@@ -179,7 +172,7 @@ class posectrl(nn.Module):
         state_dict = torch.load(ckpt_path, map_location="cpu")
 
         # Load state dict for image_proj_model and adapter_modules
-        self.image_proj_model_point.load_state_dict(state_dict["vpmatrix_points"], strict=True)
+        self.image_proj_model_point.load_state_dict(state_dict["image_proj_model_point"], strict=True)
         self.atten_modules.load_state_dict(state_dict["atten_modules"], strict=True)
         self.image_proj_model.load_state_dict(state_dict["image_proj_model"], strict=True)
 
@@ -235,7 +228,7 @@ def main():
     image_proj_model_point = ImageProjModel(
         cross_attention_dim=unet.config.cross_attention_dim,
         clip_embeddings_dim=image_encoder.config.projection_dim,
-        clip_extra_context_tokens=32,
+        clip_extra_context_tokens=8,
     )
     # init pose modules
     attn_procs = {}
@@ -328,6 +321,7 @@ def main():
                 bsz = latents.shape[0]
                 # Sample a random timestep for each image
                 timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (bsz,), device=latents.device)
+                min_step = 10
                 timesteps = timesteps.long()
 
                 # Add noise to the latents according to the noise magnitude at each timestep
@@ -348,7 +342,15 @@ def main():
                     with torch.no_grad():
                         encoder_hidden_states = text_encoder(batch["text_input_ids"].to(accelerator.device))[0]
                 else:
-                    encoder_hidden_states=None
+                    text_input_ids = tokenizer(
+                            "girl",
+                            max_length=tokenizer.model_max_length,
+                            padding="max_length",
+                            truncation=True,
+                            return_tensors="pt"
+                        ).input_ids
+                    encoder_hidden_states = text_encoder(text_input_ids.to(accelerator.device))[0]
+                    encoder_hidden_states = encoder_hidden_states.repeat(args.train_batch_size, 1, 1) 
                 
                 noise_pred = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, point_embeds, image_embeds)
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")

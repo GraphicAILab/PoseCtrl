@@ -230,7 +230,7 @@ class PoseCtrlV1:
         image_proj_model_point = ImageProjModel(
             cross_attention_dim=self.pipe.unet.config.cross_attention_dim,
             clip_embeddings_dim=self.image_encoder.config.projection_dim,
-            clip_extra_context_tokens=32,
+            clip_extra_context_tokens=8,
         ).to(self.device, dtype=torch.float16)
         return image_proj_model_point
 
@@ -346,20 +346,21 @@ class PoseCtrlV1:
         self.set_scale(scale)
 
         if pil_image is not None:
-            num_prompts = 1 if isinstance(pil_image, Image.Image) else len(pil_image)
+            # num_prompts = 1 if isinstance(pil_image, Image.Image) else len(pil_image)
+            num_prompts = 1
         else:
             num_prompts = clip_image_embeds.size(0)
         
         # 不需要prompt
-        # if prompt is None:
-        #     prompt = "best quality, high quality"
-        # if negative_prompt is None:
-        #     negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
+        if prompt is None:
+            prompt = "a highly detailed anime girl, in front of a pure black background"
+        if negative_prompt is None:
+            negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality, noise, cluttered background"
 
-        # if not isinstance(prompt, List):
-        #     prompt = [prompt] * num_prompts
-        # if not isinstance(negative_prompt, List):
-        #     negative_prompt = [negative_prompt] * num_prompts
+        if not isinstance(prompt, List):
+            prompt = [prompt] * num_prompts
+        if not isinstance(negative_prompt, List):
+            negative_prompt = [negative_prompt] * num_prompts
         """ 修改:这个 get_image_embeds函数输入不对"""
         image_prompt_embeds, uncond_image_prompt_embeds = self.get_image_embeds(
             pil_image=pil_image, clip_image_embeds=clip_image_embeds
@@ -378,16 +379,16 @@ class PoseCtrlV1:
         uncon_vpmatrix_points_embeds = uncon_vpmatrix_points_embeds.view(bs_embed * num_samples, seq_len, -1)
 
         with torch.inference_mode():
-            # prompt_embeds_, negative_prompt_embeds_ = self.pipe.encode_prompt(
-            #     prompt,
-            #     device=self.device,
-            #     num_images_per_prompt=num_samples,
-            #     do_classifier_free_guidance=True,
-            #     negative_prompt=negative_prompt,
-            # )
+            prompt_embeds_, negative_prompt_embeds_ = self.pipe.encode_prompt(
+                prompt,
+                device=self.device,
+                num_images_per_prompt=num_samples,
+                do_classifier_free_guidance=True,
+                negative_prompt=negative_prompt,
+            )
             """ 修改: 这里到底要不要拼接,原来到底是几维的,中间维度不影响,随便怎么拼"""
-            prompt_embeds = torch.cat([vpmatrix_points_embeds, image_prompt_embeds], dim=1)
-            negative_prompt_embeds = torch.cat([uncon_vpmatrix_points_embeds, uncond_image_prompt_embeds], dim=1)
+            prompt_embeds = torch.cat([prompt_embeds_, vpmatrix_points_embeds, image_prompt_embeds], dim=1)
+            negative_prompt_embeds = torch.cat([negative_prompt_embeds_,uncon_vpmatrix_points_embeds, uncond_image_prompt_embeds], dim=1)
 
         generator = get_generator(seed, self.device)
 

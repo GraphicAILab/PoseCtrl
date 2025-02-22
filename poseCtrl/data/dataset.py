@@ -6,6 +6,7 @@ import numpy as np
 from torchvision import transforms
 from pathlib import Path
 from matplotlib import pyplot as plt
+import re
 class CustomDataset(Dataset):
     def __init__(self, root_dir, transform=None):
         """
@@ -26,6 +27,16 @@ class CustomDataset(Dataset):
             if os.path.isdir(folder_path):
                 data_files = [f for f in os.listdir(folder_path) if f.endswith('.txt')]
                 image_files = [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg')) and f.lower().startswith('capture')]
+
+                data_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.endswith('.txt')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+                image_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg')) and f.lower().startswith('capture')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+
                 feature_file = os.path.join(folder_path, "feature.png")
                 if not os.path.exists(feature_file):
                     raise FileNotFoundError(f"'{feature_file}' does not exist, please check again.")
@@ -148,7 +159,7 @@ def load_base_points(path):
     else:
         pass  
 
-""" add 'set PYTHONPATH=F:/Projects/diffusers/Project' """
+# """ add 'set PYTHONPATH=F:/Projects/diffusers/Project' """
 # train_dataset = CustomDataset("F:\\Projects\\diffusers\\ProgramData\\sample_new")
 
 # train_dataloader = torch.utils.data.DataLoader(
