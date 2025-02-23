@@ -230,7 +230,7 @@ class PoseCtrlV1:
         image_proj_model_point = ImageProjModel(
             cross_attention_dim=self.pipe.unet.config.cross_attention_dim,
             clip_embeddings_dim=self.image_encoder.config.projection_dim,
-            clip_extra_context_tokens=4,
+            clip_extra_context_tokens=8,
         ).to(self.device, dtype=torch.float16)
         return image_proj_model_point
 
@@ -318,7 +318,7 @@ class PoseCtrlV1:
         inputs = self.clip_image_processor(images=base_points, return_tensors="pt").pixel_values
         point_embeds = self.image_encoder(inputs.to(self.device, dtype=torch.float16)).image_embeds
 
-        image_prompt_embeds = self.image_proj_model_point(point_embeds,V_matrix.unsqueeze(0),P_matrix.unsqueeze(0))
+        image_prompt_embeds = self.image_proj_model_point(point_embeds)
         uncond_image_prompt_embeds = self.image_proj_model_point(torch.zeros_like(point_embeds))
         return image_prompt_embeds, uncond_image_prompt_embeds
 
@@ -430,7 +430,7 @@ class PoseCtrlV2:
         image_proj_model_point = VPProjModel(
             cross_attention_dim=self.pipe.unet.config.cross_attention_dim,
             clip_embeddings_dim=self.image_encoder.config.projection_dim,
-            clip_extra_context_tokens=8,
+            clip_extra_context_tokens=4,
         ).to(self.device, dtype=torch.float16)
         return image_proj_model_point
 
@@ -518,8 +518,8 @@ class PoseCtrlV2:
         inputs = self.clip_image_processor(images=base_points, return_tensors="pt").pixel_values
         point_embeds = self.image_encoder(inputs.to(self.device, dtype=torch.float16)).image_embeds
 
-        image_prompt_embeds = self.image_proj_model_point(point_embeds)
-        uncond_image_prompt_embeds = self.image_proj_model_point(torch.zeros_like(point_embeds))
+        image_prompt_embeds = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
+        uncond_image_prompt_embeds = self.image_proj_model_point(torch.zeros_like(point_embeds),V_matrix, P_matrix)
         return image_prompt_embeds, uncond_image_prompt_embeds
 
 

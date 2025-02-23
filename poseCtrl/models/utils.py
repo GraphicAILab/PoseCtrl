@@ -34,3 +34,4 @@ def get_generator(seed, device):
         generator = None
 
     return generator
+

@@ -144,7 +144,7 @@ class VPProjModel(torch.nn.Module):
         self.proj = torch.nn.Linear(clip_embeddings_dim, self.clip_extra_context_tokens * cross_attention_dim)
         self.norm = torch.nn.LayerNorm(cross_attention_dim)
 
-        self.vp_linear = torch.nn.Linear(torch.nn.Linear)
+        self.vp_linear = torch.nn.Linear(4 * 4, 768)
         self.activation = nn.Sigmoid()
 
     def forward(self, image_embeds, V_matrix, P_matrix):
