@@ -132,6 +132,33 @@ class ImageProjModel(torch.nn.Module):
         clip_extra_context_tokens = self.norm(clip_extra_context_tokens)
         return clip_extra_context_tokens
     
+class VPProjModel(torch.nn.Module):
+    """Projection Model"""
+
+    def __init__(self, cross_attention_dim=1024, clip_embeddings_dim=1024, clip_extra_context_tokens=4):
+        super().__init__()
+
+        self.generator = None
+        self.cross_attention_dim = cross_attention_dim
+        self.clip_extra_context_tokens = clip_extra_context_tokens
+        self.proj = torch.nn.Linear(clip_embeddings_dim, self.clip_extra_context_tokens * cross_attention_dim)
+        self.norm = torch.nn.LayerNorm(cross_attention_dim)
+
+        self.vp_linear = torch.nn.Linear(torch.nn.Linear)
+        self.activation = nn.Sigmoid()
+
+    def forward(self, image_embeds, V_matrix, P_matrix):
+        embeds = image_embeds
+        clip_extra_context_tokens = self.proj(embeds).reshape(
+            -1, self.clip_extra_context_tokens, self.cross_attention_dim
+        )
+        clip_extra_context_tokens = self.norm(clip_extra_context_tokens)
+
+        VP_matrix = torch.bmm(P_matrix, V_matrix)
+        VP_embeds = self.vp_linear(VP_matrix.view(VP_matrix.shape[0], -1))
+        VP_embeds = self.activation(VP_embeds)
+        VP_embeds = VP_embeds.unsqueeze(1).repeat(1, self.clip_extra_context_tokens, 1)
+        return clip_extra_context_tokens + VP_embeds
 
 class VPmatrixPointsV1(nn.Module):
     """ 
