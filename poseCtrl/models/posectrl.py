@@ -353,7 +353,8 @@ class PoseCtrlV1:
         
         # 不需要prompt
         if prompt is None:
-            prompt = "a highly detailed anime girl, in front of a pure black background"
+            # prompt = "a highly detailed anime girl, in front of a pure black background"
+            prompt = "girl"
         if negative_prompt is None:
             negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality, noise, cluttered background"
 

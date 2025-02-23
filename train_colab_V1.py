@@ -250,10 +250,10 @@ def main():
         else:
             layer_name = name.split(".processor")[0]
             weights = {
-                "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"],
-                "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"],
-                "to_k_pose.weight": unet_sd[layer_name + ".to_k.weight"],
-                "to_v_pose.weight": unet_sd[layer_name + ".to_v.weight"],
+                "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"].clone(),
+                "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"].clone(),
+                "to_k_pose.weight": unet_sd[layer_name + ".to_k.weight"].clone(),
+                "to_v_pose.weight": unet_sd[layer_name + ".to_v.weight"].clone(),
             }
             attn_procs[name] = PoseAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
             attn_procs[name].load_state_dict(weights)
