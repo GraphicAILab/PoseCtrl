@@ -553,10 +553,11 @@ class PoseCtrlV2:
         
         # 不需要prompt
         if prompt is None:
-            # prompt = "a highly detailed anime girl, in front of a pure black background"
-            prompt = "girl"
+            prompt = "a highly detailed anime girl, in front of a pure black background"
+            # prompt = "girl"
         if negative_prompt is None:
-            negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality, noise, cluttered background"
+            # negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality, noise, cluttered background"
+            negative_prompt = "bad anatomy, bad hands, missing fingers, extra fingers, three hands, three legs, bad arms, missing legs, missing arms, poorly drawn face, bad face, fused face, cloned face, three crus, fused feet, fused thigh, extra crus, ugly fingers, horn, realistic photo, huge eyes, worst face, 2girl, long fingers, disconnected limbs"
 
         if not isinstance(prompt, List):
             prompt = [prompt] * num_prompts

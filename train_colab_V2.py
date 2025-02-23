@@ -343,7 +343,7 @@ def main():
                         encoder_hidden_states = text_encoder(batch["text_input_ids"].to(accelerator.device))[0]
                 else:
                     text_input_ids = tokenizer(
-                            "girl",
+                            "a highly detailed anime girl, in front of a pure black background",
                             max_length=tokenizer.model_max_length,
                             padding="max_length",
                             truncation=True,
