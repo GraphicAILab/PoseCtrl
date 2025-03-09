@@ -15,8 +15,9 @@ from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPProcessor
 import sys
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-sys.path.append('/content/drive/MyDrive/PoseCtrl')
-sys.path.append('/content/drive/MyDrive/PoseCtrl/poseCtrl')
+notebook_path = os.getcwd()
+sys.path.append(notebook_path)
+sys.path.append(os.path.join(notebook_path, "poseCtrl"))
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessor
 from poseCtrl.data.dataset import CustomDataset, load_base_points
@@ -283,7 +284,7 @@ def main():
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         shuffle=True,
-        batch_size=4,
+        batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
     )
     
