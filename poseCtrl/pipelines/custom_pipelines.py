@@ -26,16 +26,23 @@ from diffusers.utils.torch_utils import is_compiled_module, is_torch_version, ra
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusionMixin
 from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
-
+import os
+import sys
+notebook_path = os.getcwd()
+sys.path.append(notebook_path)
+sys.path.append(os.path.join(notebook_path, "poseCtrl"))
 from PoseCtrl.poseCtrl.models.pose_controlnet import PoseControlNetModel
+from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessor, PoseAttnProcessorV2Ctrl, PoseAttnProcessorV2IP
+from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
+from poseCtrl.data.dataset import CustomDataset, load_base_points
+from safetensors import safe_open
+# if is_torch_xla_available():
+#     import torch_xla.core.xla_model as xm
 
-if is_torch_xla_available():
-    import torch_xla.core.xla_model as xm
-
-    XLA_AVAILABLE = True
-else:
-    XLA_AVAILABLE = False
-
+#     XLA_AVAILABLE = True
+# else:
+#     XLA_AVAILABLE = False
+from PIL import Image
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -201,12 +208,14 @@ class StableDiffusionPosectrlPipeline(
         text_encoder: CLIPTextModel,
         tokenizer: CLIPTokenizer,
         unet: UNet2DConditionModel,
-        controlnet: Union[ControlNetModel, List[ControlNetModel], Tuple[ControlNetModel], MultiControlNetModel],
+        posecontrolnet: Union[PoseControlNetModel],
+        poseckpt: str,
         scheduler: KarrasDiffusionSchedulers,
         safety_checker: StableDiffusionSafetyChecker,
         feature_extractor: CLIPImageProcessor,
-        image_encoder: CLIPVisionModelWithProjection = None,
         requires_safety_checker: bool = True,
+        raw_base_points: torch.Tensor = None,
+        image_encoder_path: str = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
     ):
         super().__init__()
 
@@ -226,27 +235,154 @@ class StableDiffusionPosectrlPipeline(
                 " checker. If you do not want to use the safety checker, you can pass `'safety_checker=None'` instead."
             )
 
-        if isinstance(controlnet, (list, tuple)):
-            controlnet = MultiControlNetModel(controlnet)
-
         self.register_modules(
             vae=vae,
             text_encoder=text_encoder,
             tokenizer=tokenizer,
             unet=unet,
-            controlnet=controlnet,
+            posecontrolnet=posecontrolnet,
             scheduler=scheduler,
             safety_checker=safety_checker,
             feature_extractor=feature_extractor,
-            image_encoder=image_encoder,
         )
         self.vae_scale_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         self.image_processor = VaeImageProcessor(vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True)
         self.control_image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, do_convert_rgb=True, do_normalize=False
         )
+        self.image_encoder_path = image_encoder_path
+        self.image_encoder_ = CLIPVisionModelWithProjection.from_pretrained(self.image_encoder_path).to(
+            self.device, dtype=torch.float16
+        )
         self.register_to_config(requires_safety_checker=requires_safety_checker)
+        self.pose_ckpt = poseckpt
+        self.num_tokens = 4
+        self.raw_base_points = raw_base_points.to(torch.float16)
 
+        # image proj model
+        self.image_proj_model_point = self.init_VP()
+        self.image_proj_model = self.init_proj()
+        self.vpmatrix_points_sd = self.init_point()
+
+    def init_ctrl(self):
+        self.set_posectrl()
+        self.set_posectrl_ctrl
+        self.load_posectrl()
+        self.load_posectrl_ctrl()
+
+    def init_VP(self):
+        image_proj_model_point = VPProjModel(
+            cross_attention_dim=self.unet.config.cross_attention_dim,
+            clip_embeddings_dim=self.image_encoder_.config.projection_dim,
+            clip_extra_context_tokens=4,
+        ).to(self.device, dtype=torch.float16)
+        return image_proj_model_point
+
+    def init_proj(self):
+        image_proj_model = ImageProjModel(
+            cross_attention_dim=self.unet.config.cross_attention_dim,
+            clip_embeddings_dim=self.image_encoder_.config.projection_dim,
+            clip_extra_context_tokens=self.num_tokens,
+        ).to(self.device, dtype=torch.float16)
+        return image_proj_model
+    
+    def init_point(self):
+        vpmatrix_points_sd = VPmatrixPointsV1(self.raw_base_points)
+        return vpmatrix_points_sd
+
+    def set_posectrl(self):
+        unet = self.unet
+        attn_procs = {}
+        for name in unet.attn_processors.keys():
+            cross_attention_dim = None if name.endswith("attn1.processor") else unet.config.cross_attention_dim
+            if name.startswith("mid_block"):
+                hidden_size = unet.config.block_out_channels[-1]
+            elif name.startswith("up_blocks"):
+                block_id = int(name[len("up_blocks.")])
+                hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
+            elif name.startswith("down_blocks"):
+                block_id = int(name[len("down_blocks.")])
+                hidden_size = unet.config.block_out_channels[block_id]
+            if cross_attention_dim is None:
+                attn_procs[name] = AttnProcessor()
+            else:
+                attn_procs[name] = PoseAttnProcessorV2IP(
+                    hidden_size=hidden_size,
+                    cross_attention_dim=cross_attention_dim,
+                    scale=1.0,
+                    num_tokens=self.num_tokens,
+                ).to(self.device, dtype=torch.float16)
+        unet.set_attn_processor(attn_procs)
+
+    def load_posectrl(self):
+        if os.path.splitext(self.pose_ckpt)[-1] == ".safetensors":
+            state_dict = {"atten_modules_ip": {}, "image_proj_model_ip": {}}
+            with safe_open(self.pose_ckpt, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    if key.startswith("atten_modules_ip."):
+                        state_dict["atten_modules_ip"][key.replace("atten_modules_ip.", "")] = f.get_tensor(key)
+                    elif key.startswith("image_proj_model_ip."):
+                        state_dict["image_proj_model_ip"][key.replace("image_proj_model_ip.", "")] = f.get_tensor(key)
+        else:
+            state_dict = torch.load(self.pose_ckpt, map_location="cpu")
+        self.image_proj_model.load_state_dict(state_dict["image_proj_model_ip"])
+        atten_layers = torch.nn.ModuleList(self.pipe.unet.attn_processors.values())
+        atten_layers.load_state_dict(state_dict["atten_modules_ip"])
+
+    def set_posectrl_ctrl(self):
+        unet = self.posecontrolnet
+        attn_procs = {}
+        for name in unet.attn_processors.keys():
+            cross_attention_dim = None if name.endswith("attn1.processor") else unet.config.cross_attention_dim
+            if name.startswith("mid_block"):
+                hidden_size = unet.config.block_out_channels[-1]
+            elif name.startswith("up_blocks"):
+                block_id = int(name[len("up_blocks.")])
+                hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
+            elif name.startswith("down_blocks"):
+                block_id = int(name[len("down_blocks.")])
+                hidden_size = unet.config.block_out_channels[block_id]
+            if cross_attention_dim is None:
+                attn_procs[name] = AttnProcessor()
+            else:
+                attn_procs[name] = PoseAttnProcessorV2Ctrl(
+                    hidden_size=hidden_size,
+                    cross_attention_dim=cross_attention_dim,
+                    scale=1.0,
+                    num_tokens=self.num_tokens,
+                ).to(self.device, dtype=torch.float16)
+        unet.set_attn_processor(attn_procs)
+
+    def load_posectrl_ctrl(self):
+        if os.path.splitext(self.pose_ckpt)[-1] == ".safetensors":
+            state_dict = {"image_proj_model_point_ctrl": {}, "atten_modules_ctrl": {}}
+            with safe_open(self.pose_ckpt, framework="pt", device="cpu") as f:
+                for key in f.keys():
+                    if key.startswith("image_proj_model_point_ctrl."):
+                        state_dict["image_proj_model_point_ctrl"][key.replace("image_proj_model_point_ctrl.", "")] = f.get_tensor(key)
+                    elif key.startswith("atten_modules_ctrl."):
+                        state_dict["atten_modules_ctrl"][key.replace("atten_modules_ctrl.", "")] = f.get_tensor(key)
+        else:
+            state_dict = torch.load(self.pose_ckpt, map_location="cpu")
+        self.image_proj_model_point.load_state_dict(state_dict["image_proj_moimage_proj_model_point_ctrldel_point"])
+        atten_layers = torch.nn.ModuleList(self.pipe.unet.attn_processors.values())
+        atten_layers.load_state_dict(state_dict["atten_modules_ctrl"])
+
+    @torch.inference_mode()
+    def get_vpmatrix_points(self, V_matrix, P_matrix):
+        base_points = self.vpmatrix_points_sd(V_matrix, P_matrix)
+        inputs = self.image_processor(images=base_points, return_tensors="pt").pixel_values
+        point_embeds = self.image_encoder_(inputs.to(self.device, dtype=torch.float16)).image_embeds
+
+        image_prompt_embeds = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
+        uncond_image_prompt_embeds = self.image_proj_model_point(torch.zeros_like(point_embeds),V_matrix, P_matrix)
+        return image_prompt_embeds, uncond_image_prompt_embeds
+
+
+    def set_scale(self, scale):
+        for attn_processor in self.pipe.unet.attn_processors.values():
+            if isinstance(attn_processor, PoseAttnProcessor):
+                attn_processor.scale = scale
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._encode_prompt
     def _encode_prompt(
         self,
@@ -462,77 +598,18 @@ class StableDiffusionPosectrlPipeline(
                 unscale_lora_layers(self.text_encoder, lora_scale)
 
         return prompt_embeds, negative_prompt_embeds
-
-    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.encode_image
-    def encode_image(self, image, device, num_images_per_prompt, output_hidden_states=None):
-        dtype = next(self.image_encoder.parameters()).dtype
-
-        if not isinstance(image, torch.Tensor):
-            image = self.feature_extractor(image, return_tensors="pt").pixel_values
-
-        image = image.to(device=device, dtype=dtype)
-        if output_hidden_states:
-            image_enc_hidden_states = self.image_encoder(image, output_hidden_states=True).hidden_states[-2]
-            image_enc_hidden_states = image_enc_hidden_states.repeat_interleave(num_images_per_prompt, dim=0)
-            uncond_image_enc_hidden_states = self.image_encoder(
-                torch.zeros_like(image), output_hidden_states=True
-            ).hidden_states[-2]
-            uncond_image_enc_hidden_states = uncond_image_enc_hidden_states.repeat_interleave(
-                num_images_per_prompt, dim=0
-            )
-            return image_enc_hidden_states, uncond_image_enc_hidden_states
+        
+    def get_image_embeds(self, pil_image=None, clip_image_embeds=None):
+        if pil_image is not None:
+            if isinstance(pil_image, Image.Image):
+                pil_image = [pil_image]
+            clip_image = self.image_processor(images=pil_image, return_tensors="pt").pixel_values
+            clip_image_embeds = self.image_encoder_(clip_image.to(self.device, dtype=torch.float16)).image_embeds
         else:
-            image_embeds = self.image_encoder(image).image_embeds
-            image_embeds = image_embeds.repeat_interleave(num_images_per_prompt, dim=0)
-            uncond_image_embeds = torch.zeros_like(image_embeds)
-
-            return image_embeds, uncond_image_embeds
-
-    # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.prepare_ip_adapter_image_embeds
-    def prepare_ip_adapter_image_embeds(
-        self, ip_adapter_image, ip_adapter_image_embeds, device, num_images_per_prompt, do_classifier_free_guidance
-    ):
-        image_embeds = []
-        if do_classifier_free_guidance:
-            negative_image_embeds = []
-        if ip_adapter_image_embeds is None:
-            if not isinstance(ip_adapter_image, list):
-                ip_adapter_image = [ip_adapter_image]
-
-            if len(ip_adapter_image) != len(self.unet.encoder_hid_proj.image_projection_layers):
-                raise ValueError(
-                    f"`ip_adapter_image` must have same length as the number of IP Adapters. Got {len(ip_adapter_image)} images and {len(self.unet.encoder_hid_proj.image_projection_layers)} IP Adapters."
-                )
-
-            for single_ip_adapter_image, image_proj_layer in zip(
-                ip_adapter_image, self.unet.encoder_hid_proj.image_projection_layers
-            ):
-                output_hidden_state = not isinstance(image_proj_layer, ImageProjection)
-                single_image_embeds, single_negative_image_embeds = self.encode_image(
-                    single_ip_adapter_image, device, 1, output_hidden_state
-                )
-
-                image_embeds.append(single_image_embeds[None, :])
-                if do_classifier_free_guidance:
-                    negative_image_embeds.append(single_negative_image_embeds[None, :])
-        else:
-            for single_image_embeds in ip_adapter_image_embeds:
-                if do_classifier_free_guidance:
-                    single_negative_image_embeds, single_image_embeds = single_image_embeds.chunk(2)
-                    negative_image_embeds.append(single_negative_image_embeds)
-                image_embeds.append(single_image_embeds)
-
-        ip_adapter_image_embeds = []
-        for i, single_image_embeds in enumerate(image_embeds):
-            single_image_embeds = torch.cat([single_image_embeds] * num_images_per_prompt, dim=0)
-            if do_classifier_free_guidance:
-                single_negative_image_embeds = torch.cat([negative_image_embeds[i]] * num_images_per_prompt, dim=0)
-                single_image_embeds = torch.cat([single_negative_image_embeds, single_image_embeds], dim=0)
-
-            single_image_embeds = single_image_embeds.to(device=device)
-            ip_adapter_image_embeds.append(single_image_embeds)
-
-        return ip_adapter_image_embeds
+            clip_image_embeds = clip_image_embeds.to(self.device, dtype=torch.float16)
+        image_prompt_embeds = self.image_proj_model(clip_image_embeds)
+        uncond_image_prompt_embeds = self.image_proj_model(torch.zeros_like(clip_image_embeds))
+        return image_prompt_embeds, uncond_image_prompt_embeds 
 
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline.run_safety_checker
     def run_safety_checker(self, image, device, dtype):
@@ -582,7 +659,6 @@ class StableDiffusionPosectrlPipeline(
     def check_inputs(
         self,
         prompt,
-        image,
         callback_steps,
         negative_prompt=None,
         prompt_embeds=None,
@@ -635,68 +711,26 @@ class StableDiffusionPosectrlPipeline(
 
         # Check `image`
         is_compiled = hasattr(F, "scaled_dot_product_attention") and isinstance(
-            self.controlnet, torch._dynamo.eval_frame.OptimizedModule
+            self.posecontrolnet, torch._dynamo.eval_frame.OptimizedModule
         )
         if (
-            isinstance(self.controlnet, ControlNetModel)
+            isinstance(self.posecontrolnet, PoseControlNetModel)
             or is_compiled
-            and isinstance(self.controlnet._orig_mod, ControlNetModel)
+            and isinstance(self.posecontrolnet._orig_mod, PoseControlNetModel)
         ):
-            self.check_image(image, prompt, prompt_embeds)
-        elif (
-            isinstance(self.controlnet, MultiControlNetModel)
-            or is_compiled
-            and isinstance(self.controlnet._orig_mod, MultiControlNetModel)
-        ):
-            if not isinstance(image, list):
-                raise TypeError("For multiple controlnets: `image` must be type `list`")
-
-            # When `image` is a nested list:
-            # (e.g. [[canny_image_1, pose_image_1], [canny_image_2, pose_image_2]])
-            elif any(isinstance(i, list) for i in image):
-                transposed_image = [list(t) for t in zip(*image)]
-                if len(transposed_image) != len(self.controlnet.nets):
-                    raise ValueError(
-                        f"For multiple controlnets: if you pass`image` as a list of list, each sublist must have the same length as the number of controlnets, but the sublists in `image` got {len(transposed_image)} images and {len(self.controlnet.nets)} ControlNets."
-                    )
-                for image_ in transposed_image:
-                    self.check_image(image_, prompt, prompt_embeds)
-            elif len(image) != len(self.controlnet.nets):
-                raise ValueError(
-                    f"For multiple controlnets: `image` must have the same length as the number of controlnets, but got {len(image)} images and {len(self.controlnet.nets)} ControlNets."
-                )
-            else:
-                for image_ in image:
-                    self.check_image(image_, prompt, prompt_embeds)
+            # self.check_image(image, prompt, prompt_embeds)
+            pass
         else:
             assert False
 
         # Check `controlnet_conditioning_scale`
         if (
-            isinstance(self.controlnet, ControlNetModel)
+            isinstance(self.posecontrolnet, PoseControlNetModel)
             or is_compiled
-            and isinstance(self.controlnet._orig_mod, ControlNetModel)
+            and isinstance(self.posecontrolnet._orig_mod, PoseControlNetModel)
         ):
             if not isinstance(controlnet_conditioning_scale, float):
                 raise TypeError("For single controlnet: `controlnet_conditioning_scale` must be type `float`.")
-        elif (
-            isinstance(self.controlnet, MultiControlNetModel)
-            or is_compiled
-            and isinstance(self.controlnet._orig_mod, MultiControlNetModel)
-        ):
-            if isinstance(controlnet_conditioning_scale, list):
-                if any(isinstance(i, list) for i in controlnet_conditioning_scale):
-                    raise ValueError(
-                        "A single batch of varying conditioning scale settings (e.g. [[1.0, 0.5], [0.2, 0.8]]) is not supported at the moment. "
-                        "The conditioning scale must be fixed across the batch."
-                    )
-            elif isinstance(controlnet_conditioning_scale, list) and len(controlnet_conditioning_scale) != len(
-                self.controlnet.nets
-            ):
-                raise ValueError(
-                    "For multiple controlnets: When `controlnet_conditioning_scale` is specified as `list`, it must have"
-                    " the same length as the number of controlnets"
-                )
         else:
             assert False
 
@@ -710,12 +744,6 @@ class StableDiffusionPosectrlPipeline(
             raise ValueError(
                 f"`control_guidance_start` has {len(control_guidance_start)} elements, but `control_guidance_end` has {len(control_guidance_end)} elements. Make sure to provide the same number of elements to each list."
             )
-
-        if isinstance(self.controlnet, MultiControlNetModel):
-            if len(control_guidance_start) != len(self.controlnet.nets):
-                raise ValueError(
-                    f"`control_guidance_start`: {control_guidance_start} has {len(control_guidance_start)} elements but there are {len(self.controlnet.nets)} controlnets available. Make sure to provide {len(self.controlnet.nets)}."
-                )
 
         for start, end in zip(control_guidance_start, control_guidance_end):
             if start >= end:
@@ -895,7 +923,6 @@ class StableDiffusionPosectrlPipeline(
     def __call__(
         self,
         prompt: Union[str, List[str]] = None,
-        image: PipelineImageInput = None,
         height: Optional[int] = None,
         width: Optional[int] = None,
         num_inference_steps: int = 50,
@@ -923,6 +950,8 @@ class StableDiffusionPosectrlPipeline(
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        V_matrix: Optional[torch.Tensor] = None,
+        P_matrix: Optional[torch.Tensor] = None,
         **kwargs,
     ):
         r"""
@@ -1053,24 +1082,16 @@ class StableDiffusionPosectrlPipeline(
         if isinstance(callback_on_step_end, (PipelineCallback, MultiPipelineCallbacks)):
             callback_on_step_end_tensor_inputs = callback_on_step_end.tensor_inputs
 
-        controlnet = self.controlnet._orig_mod if is_compiled_module(self.controlnet) else self.controlnet
+        posecontrolnet = self.posecontrolnet._orig_mod if is_compiled_module(self.posecontrolnet) else self.posecontrolnet
 
         # align format for control guidance
         if not isinstance(control_guidance_start, list) and isinstance(control_guidance_end, list):
             control_guidance_start = len(control_guidance_end) * [control_guidance_start]
         elif not isinstance(control_guidance_end, list) and isinstance(control_guidance_start, list):
             control_guidance_end = len(control_guidance_start) * [control_guidance_end]
-        elif not isinstance(control_guidance_start, list) and not isinstance(control_guidance_end, list):
-            mult = len(controlnet.nets) if isinstance(controlnet, MultiControlNetModel) else 1
-            control_guidance_start, control_guidance_end = (
-                mult * [control_guidance_start],
-                mult * [control_guidance_end],
-            )
-
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
             prompt,
-            image,
             callback_steps,
             negative_prompt,
             prompt_embeds,
@@ -1098,13 +1119,10 @@ class StableDiffusionPosectrlPipeline(
 
         device = self._execution_device
 
-        if isinstance(controlnet, MultiControlNetModel) and isinstance(controlnet_conditioning_scale, float):
-            controlnet_conditioning_scale = [controlnet_conditioning_scale] * len(controlnet.nets)
-
         global_pool_conditions = (
-            controlnet.config.global_pool_conditions
-            if isinstance(controlnet, ControlNetModel)
-            else controlnet.nets[0].config.global_pool_conditions
+            posecontrolnet.config.global_pool_conditions
+            if isinstance(posecontrolnet, PoseControlNetModel)
+            else posecontrolnet.nets[0].config.global_pool_conditions
         )
         guess_mode = guess_mode or global_pool_conditions
 
@@ -1130,55 +1148,21 @@ class StableDiffusionPosectrlPipeline(
             prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds])
 
         if ip_adapter_image is not None or ip_adapter_image_embeds is not None:
-            image_embeds = self.prepare_ip_adapter_image_embeds(
-                ip_adapter_image,
-                ip_adapter_image_embeds,
-                device,
-                batch_size * num_images_per_prompt,
-                self.do_classifier_free_guidance,
+            image_prompt_embeds, uncond_image_prompt_embeds = self.get_image_embeds(
+                pil_image=ip_adapter_image, clip_image_embeds=None
             )
+            bs_embed, seq_len, _ = image_prompt_embeds.shape
+            image_prompt_embeds = image_prompt_embeds.repeat(1, batch_size * num_images_per_prompt, 1)
+            image_prompt_embeds = image_prompt_embeds.view(bs_embed * batch_size * num_images_per_prompt, seq_len, -1)
+            uncond_image_prompt_embeds = uncond_image_prompt_embeds.repeat(1, batch_size * num_images_per_prompt, 1)
+            uncond_image_prompt_embeds = uncond_image_prompt_embeds.view(bs_embed * batch_size * num_images_per_prompt, seq_len, -1)
 
-        # 4. Prepare image
-        if isinstance(controlnet, ControlNetModel):
-            image = self.prepare_image(
-                image=image,
-                width=width,
-                height=height,
-                batch_size=batch_size * num_images_per_prompt,
-                num_images_per_prompt=num_images_per_prompt,
-                device=device,
-                dtype=controlnet.dtype,
-                do_classifier_free_guidance=self.do_classifier_free_guidance,
-                guess_mode=guess_mode,
-            )
-            height, width = image.shape[-2:]
-        elif isinstance(controlnet, MultiControlNetModel):
-            images = []
-
-            # Nested lists as ControlNet condition
-            if isinstance(image[0], list):
-                # Transpose the nested image list
-                image = [list(t) for t in zip(*image)]
-
-            for image_ in image:
-                image_ = self.prepare_image(
-                    image=image_,
-                    width=width,
-                    height=height,
-                    batch_size=batch_size * num_images_per_prompt,
-                    num_images_per_prompt=num_images_per_prompt,
-                    device=device,
-                    dtype=controlnet.dtype,
-                    do_classifier_free_guidance=self.do_classifier_free_guidance,
-                    guess_mode=guess_mode,
-                )
-
-                images.append(image_)
-
-            image = images
-            height, width = image[0].shape[-2:]
-        else:
-            assert False
+        vpmatrix_points_embeds, uncon_vpmatrix_points_embeds= self.get_vpmatrix_points(V_matrix, P_matrix)
+        bs_embed, seq_len, _ = vpmatrix_points_embeds.shape
+        vpmatrix_points_embeds = vpmatrix_points_embeds.repeat(1, batch_size * num_images_per_prompt, 1)
+        vpmatrix_points_embeds = vpmatrix_points_embeds.view(bs_embed * batch_size * num_images_per_prompt, seq_len, -1)
+        uncon_vpmatrix_points_embeds = uncon_vpmatrix_points_embeds.repeat(1, batch_size * num_images_per_prompt, 1)
+        uncon_vpmatrix_points_embeds = uncon_vpmatrix_points_embeds.view(bs_embed * batch_size * num_images_per_prompt, seq_len, -1)
 
         # 5. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
@@ -1210,12 +1194,6 @@ class StableDiffusionPosectrlPipeline(
         # 7. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
-        # 7.1 Add image embeds for IP-Adapter
-        added_cond_kwargs = (
-            {"image_embeds": image_embeds}
-            if ip_adapter_image is not None or ip_adapter_image_embeds is not None
-            else None
-        )
 
         # 7.2 Create tensor stating which controlnets to keep
         controlnet_keep = []
@@ -1224,12 +1202,12 @@ class StableDiffusionPosectrlPipeline(
                 1.0 - float(i / len(timesteps) < s or (i + 1) / len(timesteps) > e)
                 for s, e in zip(control_guidance_start, control_guidance_end)
             ]
-            controlnet_keep.append(keeps[0] if isinstance(controlnet, ControlNetModel) else keeps)
+            controlnet_keep.append(keeps[0] if isinstance(posecontrolnet, PoseControlNetModel) else keeps)
 
         # 8. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         is_unet_compiled = is_compiled_module(self.unet)
-        is_controlnet_compiled = is_compiled_module(self.controlnet)
+        is_controlnet_compiled = is_compiled_module(self.posecontrolnet)
         is_torch_higher_equal_2_1 = is_torch_version(">=", "2.1")
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -1245,14 +1223,8 @@ class StableDiffusionPosectrlPipeline(
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
                 # controlnet(s) inference
-                if guess_mode and self.do_classifier_free_guidance:
-                    # Infer ControlNet only for the conditional batch.
-                    control_model_input = latents
-                    control_model_input = self.scheduler.scale_model_input(control_model_input, t)
-                    controlnet_prompt_embeds = prompt_embeds.chunk(2)[1]
-                else:
-                    control_model_input = latent_model_input
-                    controlnet_prompt_embeds = prompt_embeds
+                control_model_input = latent_model_input
+                controlnet_prompt_embeds = prompt_embeds
 
                 if isinstance(controlnet_keep[i], list):
                     cond_scale = [c * s for c, s in zip(controlnet_conditioning_scale, controlnet_keep[i])]
@@ -1262,11 +1234,16 @@ class StableDiffusionPosectrlPipeline(
                         controlnet_cond_scale = controlnet_cond_scale[0]
                     cond_scale = controlnet_cond_scale * controlnet_keep[i]
 
-                down_block_res_samples, mid_block_res_sample = self.controlnet(
+                ctrl_prompt_embeds = torch.cat([prompt_embeds, image_prompt_embeds], dim=1)
+                ctrl_negative_prompt_embeds = torch.cat([negative_prompt_embeds, uncond_image_prompt_embeds], dim=1)
+                unet_prompt_embeds = torch.cat([prompt_embeds, vpmatrix_points_embeds], dim=1)
+                unet_negative_prompt_embeds = torch.cat([negative_prompt_embeds,uncon_vpmatrix_points_embeds], dim=1)
+
+                down_block_res_samples, mid_block_res_sample = self.posecontrolnet(
                     control_model_input,
                     t,
-                    encoder_hidden_states=controlnet_prompt_embeds,
-                    controlnet_cond=image,
+                    prompt_embeds=ctrl_prompt_embeds,
+                    negative_prompt_embeds=ctrl_negative_prompt_embeds,
                     conditioning_scale=cond_scale,
                     guess_mode=guess_mode,
                     return_dict=False,
@@ -1283,12 +1260,12 @@ class StableDiffusionPosectrlPipeline(
                 noise_pred = self.unet(
                     latent_model_input,
                     t,
-                    encoder_hidden_states=prompt_embeds,
+                    prompt_embeds=unet_prompt_embeds,
+                    negative_prompt_embeds=unet_negative_prompt_embeds,
                     timestep_cond=timestep_cond,
                     cross_attention_kwargs=self.cross_attention_kwargs,
                     down_block_additional_residuals=down_block_res_samples,
                     mid_block_additional_residual=mid_block_res_sample,
-                    added_cond_kwargs=added_cond_kwargs,
                     return_dict=False,
                 )[0]
 
@@ -1317,8 +1294,8 @@ class StableDiffusionPosectrlPipeline(
                         step_idx = i // getattr(self.scheduler, "order", 1)
                         callback(step_idx, t, latents)
 
-                if XLA_AVAILABLE:
-                    xm.mark_step()
+                # if XLA_AVAILABLE:
+                #     xm.mark_step()
         # If we do sequential model offloading, let's offload unet and controlnet
         # manually for max memory savings
         if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
@@ -1349,3 +1326,15 @@ class StableDiffusionPosectrlPipeline(
             return (image, has_nsfw_concept)
 
         return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+
+
+
+
+if __name__ == '__main__':
+    ctrl_path = ''
+    poseckpt = ''
+    controlnet = PoseControlNetModel.from_pretrained(ctrl_path, torch_dtype=torch.float16, local_files_only=True)
+    base_point_path=r'F:\Projects\diffusers\Project\PoseCtrl\dataSet\standardVertex.txt'
+    raw_base_points=load_base_points(base_point_path)  
+    model  = StableDiffusionPosectrlPipeline.from_pretrained('runwayml/stable-diffusion-v1-5', posecontrolnet=controlnet,raw_base_points=raw_base_points, poseckpt=poseckpt)
+    # model.init_ctrl()

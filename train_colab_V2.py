@@ -19,7 +19,7 @@ notebook_path = os.getcwd()
 sys.path.append(notebook_path)
 sys.path.append(os.path.join(notebook_path, "poseCtrl"))
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
-from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessor
+from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessorV1
 from poseCtrl.data.dataset import CustomDataset, load_base_points
 from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionInpaintPipelineLegacy, DDIMScheduler, AutoencoderKL
 from PIL import Image
@@ -256,7 +256,7 @@ def main():
                 "to_k_pose.weight": unet_sd[layer_name + ".to_k.weight"].clone(),
                 "to_v_pose.weight": unet_sd[layer_name + ".to_v.weight"].clone(),
             }
-            attn_procs[name] = PoseAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
+            attn_procs[name] = PoseAttnProcessorV1(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
             attn_procs[name].load_state_dict(weights)
 
     unet.set_attn_processor(attn_procs)

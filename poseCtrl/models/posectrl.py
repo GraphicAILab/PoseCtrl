@@ -14,7 +14,7 @@ from poseCtrl.models.utils import get_generator
 import sys
 sys.path.append('/content/drive/MyDrive/PoseCtrl')
 sys.path.append('/content/drive/MyDrive/PoseCtrl/poseCtrl')
-from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessor
+from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessor,PoseAttnProcessorV1
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
 from poseCtrl.data.dataset import CustomDataset, load_base_points
 
@@ -462,7 +462,7 @@ class PoseCtrlV2:
             if cross_attention_dim is None:
                 attn_procs[name] = AttnProcessor()
             else:
-                attn_procs[name] = PoseAttnProcessor(
+                attn_procs[name] = PoseAttnProcessorV1(
                     hidden_size=hidden_size,
                     cross_attention_dim=cross_attention_dim,
                     scale=1.0,
@@ -525,7 +525,7 @@ class PoseCtrlV2:
 
     def set_scale(self, scale):
         for attn_processor in self.pipe.unet.attn_processors.values():
-            if isinstance(attn_processor, PoseAttnProcessor):
+            if isinstance(attn_processor, PoseAttnProcessorV1):
                 attn_processor.scale = scale
 
     def generate(
