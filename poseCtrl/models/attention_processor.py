@@ -206,7 +206,7 @@ class PoseAttnProcessorV1(nn.Module):
     这个是加上prompt的
     """
 
-    def __init__(self, hidden_size, cross_attention_dim=None, scale=1.0, num_tokens=4, num_point_tokens=8):
+    def __init__(self, hidden_size, cross_attention_dim=None, scale=1.0, num_tokens=4, num_point_tokens=4):
         super().__init__()
 
         self.hidden_size = hidden_size
