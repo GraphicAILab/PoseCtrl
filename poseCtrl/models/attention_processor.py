@@ -265,8 +265,8 @@ class PoseAttnProcessorV1(nn.Module):
             if attn.norm_cross:
                 encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-        key = self.to_k(encoder_hidden_states)
-        value = self.to_v(encoder_hidden_states)
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
 
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
@@ -285,7 +285,7 @@ class PoseAttnProcessorV1(nn.Module):
 
         point_attention_probs = attn.get_attention_scores(query, point_key, None)
         point_hidden_states = torch.bmm(point_attention_probs, point_value)
-        point_hidden_states = attn.batch_to_head_dim(hidden_states)
+        point_hidden_states = attn.batch_to_head_dim(point_hidden_states)
 
         # for ip-adapter
         feature_key = self.to_k_ip(feature_hidden_states)
@@ -383,8 +383,8 @@ class PoseAttnProcessorV2IP(nn.Module):
             if attn.norm_cross:
                 encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-        key = self.to_k(encoder_hidden_states)
-        value = self.to_v(encoder_hidden_states)
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
 
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
@@ -490,8 +490,8 @@ class PoseAttnProcessorV2Ctrl(nn.Module):
             if attn.norm_cross:
                 encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-        key = self.to_k(encoder_hidden_states)
-        value = self.to_v(encoder_hidden_states)
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
 
         query = attn.head_to_batch_dim(query)
         key = attn.head_to_batch_dim(key)
@@ -510,7 +510,7 @@ class PoseAttnProcessorV2Ctrl(nn.Module):
 
         point_attention_probs = attn.get_attention_scores(query, point_key, None)
         point_hidden_states = torch.bmm(point_attention_probs, point_value)
-        point_hidden_states = attn.batch_to_head_dim(hidden_states)
+        point_hidden_states = attn.batch_to_head_dim(point_hidden_states)
 
 
         hidden_states = hidden_states + self.scale * point_hidden_states 
