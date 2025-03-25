@@ -389,3 +389,10 @@ if __name__ == "__main__":
     main()  
 
 
+""" TODO
+1. 改下attention
+2. 改下train的逻辑
+3. 改下controlnet, 先初始化一个, 然后同样set一下, 然后改下中间
+4. 跑通
+5. 测试load 和 inference
+ """
