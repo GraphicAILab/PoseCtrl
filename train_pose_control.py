@@ -14,7 +14,9 @@ from accelerate.utils import ProjectConfiguration
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPProcessor
 import sys
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+sys.path.append(r'F:\Projects\diffusers\Project\PoseCtrl')
+sys.path.append(r'F:\Projects\diffusers\Project\PoseCtrl\poseCtrl')
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessor
 from poseCtrl.data.dataset import CustomDataset, load_base_points
