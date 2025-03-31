@@ -28,7 +28,6 @@ from diffusers.models.attention_processor import (
     AttentionProcessor,
     AttnAddedKVProcessor,
     AttnProcessor,
-    FusedAttnProcessor2_0,
 )
 from diffusers.models.embeddings import TextImageProjection, TextImageTimeEmbedding, TextTimeEmbedding, TimestepEmbedding, Timesteps
 from diffusers.models.unets.unet_2d_blocks import (
@@ -43,7 +42,6 @@ from diffusers.models.unets.unet_2d_blocks import (
     get_up_block,
 )
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
-
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
