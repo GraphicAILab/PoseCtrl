@@ -381,7 +381,7 @@ class StableDiffusionPosectrlPipeline(
 
     def set_scale(self, scale):
         for attn_processor in self.pipe.unet.attn_processors.values():
-            if isinstance(attn_processor, PoseAttnProcessor):
+            if isinstance(attn_processor, PoseAttnProcessorV2IP):
                 attn_processor.scale = scale
     # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.StableDiffusionPipeline._encode_prompt
     def _encode_prompt(

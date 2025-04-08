@@ -112,6 +112,62 @@ class VPmatrixPoints(nn.Module):
 
         return base_points
 
+
+class VPmatrixPointsV3(nn.Module):
+    """ 
+    Input:  
+        V_matrix: [batch,4,4]
+        P_matrix: [batch,4,4]
+        raw_base_points: [13860,4]
+    Output:
+        base_points: [batch,4,768] 
+    """
+    def __init__(self, raw_base_points):
+        super().__init__() 
+        self.register_buffer("raw_base_points", raw_base_points)
+
+        self.resnet = nn.ModuleList([
+            nn.Conv2d(720, 256, kernel_size=(3, 3), padding=(1, 1)),  
+            ResnetBlock2D(in_channels=256, out_channels=256, temb_channels=None),  
+            ResnetBlock2D(in_channels=256, out_channels=512, temb_channels=None),  
+            ResnetBlock2D(in_channels=512, out_channels=768, temb_channels=None),  
+            nn.Conv2d(768, 768, kernel_size=(1, 1))  
+        ])
+        
+        # 新增部分：将77映射到4，并加ReLU
+        self.linear = nn.Linear(77, 4)
+        self.relu = nn.ReLU()
+
+    def forward(self, V_matrix, P_matrix):
+        VP_matrix = torch.bmm(P_matrix, V_matrix)  # [batch, 4, 4]
+        points = self.raw_base_points.unsqueeze(0).expand(VP_matrix.shape[0], -1, -1)
+        transformed_points = torch.bmm(points, VP_matrix.transpose(1, 2))  # [batch, 13860, 4]
+        transformed_points[..., :3] = torch.where(
+            transformed_points[..., 3:4] != 0,
+            transformed_points[..., :3] / transformed_points[..., 3:4],
+            transformed_points[..., :3]
+        )  # [batch, 13860, 3]
+        transformed_points = transformed_points[..., :3]
+        ones = torch.ones_like(transformed_points[..., :1])  # [batch, 13860, 1]
+        transformed_points = torch.cat([transformed_points, ones], dim=-1)
+        base_points = transformed_points.view(VP_matrix.shape[0], 77, 720)
+        base_points = base_points.permute(0, 2, 1).unsqueeze(-1)  # [batch, 720, 77, 1]
+
+        for layer in self.resnet:
+            if isinstance(layer, ResnetBlock2D):
+                base_points = layer(base_points, temb=None)  
+            else:
+                base_points = layer(base_points)
+
+        base_points = base_points.squeeze(-1).permute(0, 2, 1)  # [batch, 77, 768]
+        base_points = base_points.permute(0, 2, 1)              # [batch, 768, 77]
+        base_points = self.linear(base_points)                  # [batch, 768, 4]
+        base_points = self.relu(base_points)                    # ReLU激活
+        base_points = base_points.permute(0, 2, 1)              # [batch, 4, 768]
+
+        return base_points
+
+
 class ImageProjModel(torch.nn.Module):
     """Projection Model"""
 

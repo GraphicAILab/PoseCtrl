@@ -17,11 +17,11 @@ from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjec
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCMultistepScheduler,UNet2DConditionModel
 import sys
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-notebook_path = os.getcwd()
-sys.path.append(notebook_path)
-sys.path.append(os.path.join(notebook_path, "poseCtrl"))
-from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
+sys.path.append('/content/drive/MyDrive/PoseCtrl')
+sys.path.append('/content/drive/MyDrive/PoseCtrl/poseCtrl')
+from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV3, VPProjModel
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessor
+from poseCtrl.models.attention_processor import PoseAttnProcessorV2Ctrl, PoseAttnProcessorV2IP
 from poseCtrl.data.dataset import CustomDataset, load_base_points
 from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionInpaintPipelineLegacy, DDIMScheduler, AutoencoderKL
 from PIL import Image
@@ -156,8 +156,8 @@ class posectrl(nn.Module):
         if ckpt_path is not None:
             self.load_from_checkpoint(ckpt_path)
 
-    def forward(self, noisy_latents, timesteps, encoder_hidden_states, point_embeds, image_embeds, V_matrix, P_matrix):
-        point_tokens = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
+    def forward(self, noisy_latents, timesteps, encoder_hidden_states, image_embeds, V_matrix, P_matrix):
+        point_tokens = self.image_proj_model_point(V_matrix, P_matrix)
         feature_tokens = self.image_proj_model(image_embeds)
         """ 修改:防止之后要加text """
         if encoder_hidden_states!=None:
@@ -168,7 +168,7 @@ class posectrl(nn.Module):
         point_hidden_states = torch.cat([encoder_hidden_states, point_tokens], dim = 1)
         # Predict the noise residual
         noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
-        down_block_res_samples, mid_block_res_sample = self.posecontrolnet(
+        down_block_res_samples, mid_block_res_sample = self.unet_copy(
                     noisy_latents,
                     timesteps,
                     point_hidden_states,
@@ -232,32 +232,24 @@ def main():
     unet = UNet2DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(args.image_encoder_path)
     processor = CLIPProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
-    unet_copy = UNet2DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
+    # unet_copy = UNet2DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
+    unet_copy = ControlNetModel.from_unet(unet)
     # freeze parameters of models to save more memory
     unet.requires_grad_(False)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     image_encoder.requires_grad_(False)
     
-    unet_sd.requires_grad_(True)
+    unet_copy.requires_grad_(True)
 
-    #vp-matrix encoder
-    raw_base_points=load_base_points(args.base_point_path)  
-    vpmatrix_points_sd = VPmatrixPointsV1(raw_base_points)
-    # v2
+    raw_base_points=load_base_points(args.base_point_path).to(accelerator.device)
+    image_proj_model_point = VPmatrixPointsV3(raw_base_points).to(accelerator.device)
     image_proj_model = ImageProjModel(
         cross_attention_dim=unet.config.cross_attention_dim,
         clip_embeddings_dim=image_encoder.config.projection_dim,
         clip_extra_context_tokens=4,
-    )
-    # v1
-    vpmatrix_points_sd = VPmatrixPoints(raw_base_points)
-    image_proj_model_point = VPProjModel(
-        cross_attention_dim=unet.config.cross_attention_dim,
-        clip_embeddings_dim=image_encoder.config.projection_dim,
-        clip_extra_context_tokens=4,
-    )
-    # init pose modules
+    ).to(accelerator.device)
+
     attn_procs = {}
     unet_sd = unet.state_dict()
     for name in unet.attn_processors.keys():
@@ -280,7 +272,7 @@ def main():
                 "to_k_ip.weight": unet_sd[layer_name + ".to_k.weight"].clone(),
                 "to_v_ip.weight": unet_sd[layer_name + ".to_v.weight"].clone(),
             }
-            attn_procs[name] = PoseAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
+            attn_procs[name] = PoseAttnProcessorV2IP(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
             attn_procs[name].load_state_dict(weights)
 
     unet.set_attn_processor(attn_procs)
@@ -308,7 +300,7 @@ def main():
                 "to_k_pose.weight": unet_sd_p[layer_name + ".to_k.weight"].clone(),
                 "to_v_pose.weight": unet_sd_p[layer_name + ".to_v.weight"].clone(),
             }
-            attn_procs_p[name] = PoseAttnProcessor(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
+            attn_procs_p[name] = PoseAttnProcessorV2Ctrl(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
             attn_procs_p[name].load_state_dict(weights)
 
     unet_copy.set_attn_processor(attn_procs_p)
@@ -352,9 +344,6 @@ def main():
     # Prepare everything with our `accelerator`.
     pose_ctrl, optimizer, train_dataloader = accelerator.prepare(pose_ctrl, optimizer, train_dataloader)
     
-
-
-
     global_step = 0
     for epoch in range(0, args.num_train_epochs): #default is 100
         begin = time.perf_counter()
@@ -382,11 +371,6 @@ def main():
                     inputs = processor(images=batch['feature'], return_tensors="pt") 
                     image_tensor = inputs["pixel_values"] 
                     image_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
-                with torch.no_grad():
-                    base_points = vpmatrix_points_sd(batch['view_matrix'], batch['projection_matrix'])
-                    inputs = processor(images=base_points, return_tensors="pt") 
-                    image_tensor = inputs["pixel_values"]
-                    point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
 
                 if "text_input_ids" in batch:
                     with torch.no_grad():
@@ -402,7 +386,7 @@ def main():
                     encoder_hidden_states = text_encoder(text_input_ids.to(accelerator.device))[0]
                     encoder_hidden_states = encoder_hidden_states.repeat(args.train_batch_size, 1, 1) 
                 
-                noise_pred = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, point_embeds, image_embeds, batch['view_matrix'], batch['projection_matrix'])
+                noise_pred = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, image_embeds, batch['view_matrix'], batch['projection_matrix'])
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
             
                 # Gather the losses across all processes for logging (if we use distributed training).
