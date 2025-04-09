@@ -160,15 +160,10 @@ class posectrl(nn.Module):
     def forward(self, noisy_latents, timesteps, encoder_hidden_states, image_embeds, V_matrix, P_matrix):
         point_tokens = self.image_proj_model_point(V_matrix, P_matrix)
         feature_tokens = self.image_proj_model(image_embeds)
-        """ 修改:防止之后要加text """
-        if encoder_hidden_states!=None:
-            encoder_hidden_states = torch.cat([encoder_hidden_states, point_tokens, feature_tokens], dim=1)
-        else:
-            encoder_hidden_states=torch.cat([point_tokens, feature_tokens], dim=1)
+
         ip_hidden_states = torch.cat([encoder_hidden_states, feature_tokens], dim = 1)
         point_hidden_states = torch.cat([encoder_hidden_states, point_tokens], dim = 1)
-        # Predict the noise residual
-        # noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+
         down_block_res_samples, mid_block_res_sample = self.unet_copy(
                     noisy_latents,
                     timesteps,
@@ -190,7 +185,7 @@ class posectrl(nn.Module):
         # Calculate original checksums
         orig_VPmatrix_sum = torch.sum(torch.stack([torch.sum(p) for p in self.image_proj_model_point.parameters()]))
         orig_atten_sum = torch.sum(torch.stack([torch.sum(p) for p in self.atten_modules.parameters()]))
-        orig__proj_sum = torch.sum(torch.stack([torch.sum(p) for p in self.image_proj_model.parameters()]))
+        orig_proj_sum = torch.sum(torch.stack([torch.sum(p) for p in self.image_proj_model.parameters()]))
 
         state_dict = torch.load(ckpt_path, map_location="cpu")
 
@@ -207,7 +202,7 @@ class posectrl(nn.Module):
         # Verify if the weights have changed
         assert orig_VPmatrix_sum != new_VPmatrix_sum, "Weights of VPmatrixEncoder did not change!"
         assert orig_atten_sum != new_atten_sum, "Weights of atten_modules did not change!"
-        assert orig__proj_sum != new__proj_sum, "Weights of image_proj_model did not change!"
+        assert orig_proj_sum != new__proj_sum, "Weights of image_proj_model did not change!"
         print(f"Successfully loaded weights from checkpoint {ckpt_path}")
 
 def main():
@@ -328,7 +323,7 @@ def main():
     params_to_opt = itertools.chain(pose_ctrl.image_proj_model_point.parameters(),  
                                     pose_ctrl.atten_modules.parameters(), 
                                     pose_ctrl.image_proj_model.parameters(),
-                                    pose_ctrl.atten_modules_p.parameters(),
+                                    # pose_ctrl.atten_modules_p.parameters(), 如果unet整个都放开训练，这个应该不需要了
                                     pose_ctrl.unet_copy.parameters())
 
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -407,14 +402,9 @@ def main():
             
             if global_step % args.save_steps == 0:
                 save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                accelerator.save_state(save_path)
+                os.makedirs(save_path, exist_ok=True)
                 torch.save(pose_ctrl.state_dict(), os.path.join(save_path,'model.pth'))
-                # torch.save(optimizer.state_dict(), os.path.join(save_path,'optimizer.pth'))
 
-                # img = noise_pred[0].permute(1, 2, 0).cpu().detach().numpy()
-                # img = (img * 255).astype(np.uint8)
-                # image = Image.fromarray(img)
-                # image.save(os.path.join(save_path,'image.png'))
 
             begin = time.perf_counter()
 
