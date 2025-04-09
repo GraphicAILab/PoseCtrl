@@ -1332,8 +1332,8 @@ class StableDiffusionPosectrlPipeline(
 
 
 if __name__ == '__main__':
-    ctrl_path = ''
-    poseckpt = ''
+    ctrl_path = r'F:\Projects\diffusers\Project\sd-pose_ctrl\V3\posectrlv3.bin'
+    poseckpt = r'F:\Projects\diffusers\Project\sd-pose_ctrl\V3\posectrlv3.bin'
     controlnet = PoseControlNetModel.from_pretrained(ctrl_path, torch_dtype=torch.float16, local_files_only=True)
     base_point_path=r'F:\Projects\diffusers\Project\PoseCtrl\dataSet\standardVertex.txt'
     raw_base_points=load_base_points(base_point_path)  
