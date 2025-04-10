@@ -26,7 +26,7 @@ class PoseControlNet:
         self.image_encoder_path = image_encoder_path
         self.pose_ckpt = pose_ckpt
         self.num_tokens = num_tokens
-        self.raw_base_points = raw_base_points.to(torch.float16)
+        self.raw_base_points = raw_base_points.to(torch.float16).to(self.device)
         self.pipe = sd_pipe.to(self.device)
         self.unet_copy = self.init_unet_copy()
         self.set_posectrl()
@@ -51,10 +51,10 @@ class PoseControlNet:
     
     def init_point(self):
         vpmatrix_points_sd = VPmatrixPointsV3(self.raw_base_points)
-        return vpmatrix_points_sd
+        return vpmatrix_points_sd.to(self.device, dtype=torch.float16)
 
     def init_unet_copy(self):
-        return PoseControlNetModel.from_unet(self.pipe.unet)
+        return PoseControlNetModel.from_unet(self.pipe.unet).to(self.device, dtype=torch.float16)
 
 
     def set_posectrl(self):
@@ -83,10 +83,8 @@ class PoseControlNet:
         unet.set_attn_processor(attn_procs)
 
         attn_procs_p = {}
-        unet_sd_p = unet_copy.state_dict()
         for name in unet_copy.attn_processors.keys():
             cross_attention_dim = None if name.endswith("attn1.processor") else unet_copy.config.cross_attention_dim
-
             if name.startswith("mid_block"):
                 hidden_size = unet_copy.config.block_out_channels[-1]
             elif name.startswith("up_blocks"):
@@ -95,18 +93,15 @@ class PoseControlNet:
             elif name.startswith("down_blocks"):
                 block_id = int(name[len("down_blocks.")])
                 hidden_size = unet_copy.config.block_out_channels[block_id]
-
             if cross_attention_dim is None:
                 attn_procs_p[name] = AttnProcessor()
             else:
-                layer_name = name.split(".processor")[0]
-                weights = {
-                    "to_k_pose.weight": unet_sd_p[layer_name + ".to_k.weight"].clone(),
-                    "to_v_pose.weight": unet_sd_p[layer_name + ".to_v.weight"].clone(),
-                }
-                attn_procs_p[name] = PoseAttnProcessorV2Ctrl(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
-                attn_procs_p[name].load_state_dict(weights)
-
+                attn_procs_p[name] = PoseAttnProcessorV2Ctrl(
+                    hidden_size=hidden_size,
+                    cross_attention_dim=cross_attention_dim,
+                    scale=1.0,
+                    num_tokens=self.num_tokens,
+                ).to(self.device, dtype=torch.float16)
         unet_copy.set_attn_processor(attn_procs_p)
 
     def load_posectrl(self):
@@ -157,6 +152,63 @@ class PoseControlNet:
         for attn_processor in self.pipe.unet.attn_processors.values():
             if isinstance(attn_processor, PoseAttnProcessorV1):
                 attn_processor.scale = scale
+    
+
+    def custom_inference(self,
+                     ip_prompt_embeds,
+                     point_prompt_embeds,
+                     ip_negative_prompt_embeds,
+                     point_negative_prompt_embeds,
+                     num_inference_steps=50,
+                     guidance_scale=7.5,
+                     height=512,
+                     width=512,
+                     seed=42):
+        batch_size = point_prompt_embeds.shape[0]
+        device = ip_prompt_embeds.device
+        generator = torch.Generator(device=device).manual_seed(seed)
+
+        latents = torch.randn((batch_size, self.pipe.unet.in_channels, height // 8, width // 8),
+                            generator=generator, device=device, dtype=ip_prompt_embeds.dtype)
+        point_prompt_embeds = torch.cat([point_negative_prompt_embeds, point_prompt_embeds], dim=0).to(device)
+        ip_prompt_embeds = torch.cat([ip_negative_prompt_embeds, ip_prompt_embeds], dim=0).to(device)
+        # 2.  scheduler
+        self.pipe.scheduler.set_timesteps(num_inference_steps, device=device)
+        timesteps = self.pipe.scheduler.timesteps
+
+        # 3.  denoising
+        for i, t in enumerate(timesteps):
+            latent_model_input = torch.cat([latents] * 2)
+            t_tensor = torch.tensor([t], device=device, dtype=latents.dtype).expand(latent_model_input.shape[0])
+
+            down_block_res_samples, mid_block_res_sample = self.unet_copy(
+                latent_model_input, t_tensor, ip_prompt_embeds, return_dict=False
+            )
+
+            # 5. predict noise
+            noise_pred = self.pipe.unet(
+                latent_model_input,
+                t_tensor,
+                point_prompt_embeds,
+                down_block_additional_residuals=down_block_res_samples,
+                mid_block_additional_residual=mid_block_res_sample,
+                return_dict=False,
+            )[0]
+
+            # 6. classifier-free guidance
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+            # 7. update latent
+            latents = self.pipe.scheduler.step(noise_pred, t, latents).prev_sample
+
+        # 8. decode latent 得到图像
+        latents = 1 / 0.18215 * latents
+        images = self.pipe.vae.decode(latents).sample
+        images = (images / 2 + 0.5).clamp(0, 1)  # 归一化
+        images = images.cpu().permute(0, 2, 3, 1).numpy()
+
+        return images
 
     def generate(
         self,
@@ -224,26 +276,18 @@ class PoseControlNet:
             ip_negative_prompt_embeds = torch.cat([negative_prompt_embeds_,uncond_image_prompt_embeds], dim=1)
             point_negative_prompt_embeds = torch.cat([negative_prompt_embeds_,uncon_vpmatrix_points_embeds], dim=1)
 
-        generator = get_generator(seed, self.device)
-
-        down_block_res_samples, mid_block_res_sample = self.unet_copy(
-            prompt_embeds=ip_prompt_embeds,
-            negative_prompt_embeds=ip_negative_prompt_embeds,
-            return_dict=False,
-        )
-        images = self.pipe(
-            prompt_embeds=point_prompt_embeds,
-            negative_prompt_embeds=point_negative_prompt_embeds,
-            guidance_scale=guidance_scale,
+        image = self.custom_inference(
+            ip_prompt_embeds=ip_prompt_embeds,
+            point_prompt_embeds=point_prompt_embeds,
+            ip_negative_prompt_embeds=ip_negative_prompt_embeds,
+            point_negative_prompt_embeds=point_negative_prompt_embeds,
             num_inference_steps=num_inference_steps,
-            generator=generator,
-            down_block_additional_residuals=down_block_res_samples,
-            mid_block_additional_residual=mid_block_res_sample,
-            **kwargs,
-        ).images
+            guidance_scale=guidance_scale,
+            height=self.pipe.unet.config.sample_size * 8,
+            width=self.pipe.unet.config.sample_size * 8,
+            seed=seed,
+        )
 
-
-
-        return images
+        return image
 
 
