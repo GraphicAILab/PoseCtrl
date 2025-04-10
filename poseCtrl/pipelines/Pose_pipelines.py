@@ -4,7 +4,7 @@ from typing import List
 import torch
 from diffusers import StableDiffusionPipeline
 from diffusers.pipelines.controlnet.multicontrolnet import MultiControlNetModel
-
+from torch.cuda.amp import autocast
 from PIL import Image
 from safetensors import safe_open
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
@@ -155,60 +155,78 @@ class PoseControlNet:
     
 
     def custom_inference(self,
-                     ip_prompt_embeds,
-                     point_prompt_embeds,
-                     ip_negative_prompt_embeds,
-                     point_negative_prompt_embeds,
-                     num_inference_steps=50,
-                     guidance_scale=7.5,
-                     height=512,
-                     width=512,
-                     seed=42):
+                        ip_prompt_embeds,
+                        point_prompt_embeds,
+                        ip_negative_prompt_embeds,
+                        point_negative_prompt_embeds,
+                        num_inference_steps=50,
+                        guidance_scale=7.5,
+                        height=512,
+                        width=512,
+                        seed=42):
         batch_size = point_prompt_embeds.shape[0]
         device = ip_prompt_embeds.device
-        generator = torch.Generator(device=device).manual_seed(seed)
+        dtype = torch.float16  # use half precision for memory optimization
 
-        latents = torch.randn((batch_size, self.pipe.unet.in_channels, height // 8, width // 8),
-                            generator=generator, device=device, dtype=ip_prompt_embeds.dtype)
-        point_prompt_embeds = torch.cat([point_negative_prompt_embeds, point_prompt_embeds], dim=0).to(device)
-        ip_prompt_embeds = torch.cat([ip_negative_prompt_embeds, ip_prompt_embeds], dim=0).to(device)
-        # 2.  scheduler
+        # Prepare random latent input
+        latents = torch.randn(
+            (batch_size, self.pipe.unet.config.in_channels, height // 8, width // 8),
+            generator=torch.Generator(device=device).manual_seed(seed),
+            device=device,
+            dtype=dtype
+        )
+
+        # Expand prompt embeddings for classifier-free guidance
+        point_prompt_embeds = torch.cat([point_negative_prompt_embeds, point_prompt_embeds], dim=0).to(device, dtype)
+        ip_prompt_embeds = torch.cat([ip_negative_prompt_embeds, ip_prompt_embeds], dim=0).to(device, dtype)
+
+        # Set inference timesteps
         self.pipe.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.pipe.scheduler.timesteps
 
-        # 3.  denoising
-        for i, t in enumerate(timesteps):
-            latent_model_input = torch.cat([latents] * 2)
-            t_tensor = torch.tensor([t], device=device, dtype=latents.dtype).expand(latent_model_input.shape[0])
+        with torch.no_grad():
+            # Denoising loop
+            for t in timesteps:
+                # Duplicate latents for classifier-free guidance
+                latent_model_input = torch.cat([latents] * 2, dim=0)
+                t_tensor = torch.full(
+                    (latent_model_input.shape[0],),
+                    t,
+                    device=device,
+                    dtype=dtype
+                )
 
-            down_block_res_samples, mid_block_res_sample = self.unet_copy(
-                latent_model_input, t_tensor, ip_prompt_embeds, return_dict=False
-            )
+                # Get residual hints from auxiliary UNet
+                down_block_res_samples, mid_block_res_sample = self.unet_copy(
+                    latent_model_input, t_tensor, ip_prompt_embeds, return_dict=False
+                )
 
-            # 5. predict noise
-            noise_pred = self.pipe.unet(
-                latent_model_input,
-                t_tensor,
-                point_prompt_embeds,
-                down_block_additional_residuals=down_block_res_samples,
-                mid_block_additional_residual=mid_block_res_sample,
-                return_dict=False,
-            )[0]
+                # Predict noise using main UNet
+                noise_pred = self.pipe.unet(
+                    latent_model_input,
+                    t_tensor,
+                    encoder_hidden_states=point_prompt_embeds,
+                    down_block_additional_residuals=down_block_res_samples,
+                    mid_block_additional_residual=mid_block_res_sample,
+                    return_dict=False,
+                )[0]
 
-            # 6. classifier-free guidance
-            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                # Apply classifier-free guidance
+                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-            # 7. update latent
-            latents = self.pipe.scheduler.step(noise_pred, t, latents).prev_sample
+                # Update latents via scheduler
+                latents = self.pipe.scheduler.step(noise_pred, t, latents).prev_sample
 
-        # 8. decode latent 得到图像
-        latents = 1 / 0.18215 * latents
-        images = self.pipe.vae.decode(latents).sample
-        images = (images / 2 + 0.5).clamp(0, 1)  # 归一化
-        images = images.cpu().permute(0, 2, 3, 1).numpy()
+            # Decode final latents into images
+            latents = latents / self.pipe.vae.config.scaling_factor  # equivalent to 1 / 0.18215
+            images = self.pipe.vae.decode(latents).sample
+            images = (images / 2 + 0.5).clamp(0, 1)  # normalize to [0,1] range
+            images = images.cpu().permute(0, 2, 3, 1).numpy()  # convert to HWC format
 
         return images
+
+
 
     def generate(
         self,
