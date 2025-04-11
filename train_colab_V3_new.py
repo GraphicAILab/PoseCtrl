@@ -158,8 +158,8 @@ class posectrl(nn.Module):
         if ckpt_path is not None:
             self.load_from_checkpoint(ckpt_path)
 
-    def forward(self, noisy_latents, timesteps, encoder_hidden_states, image_embeds, V_matrix, P_matrix):
-        point_tokens = self.image_proj_model_point(V_matrix, P_matrix)
+    def forward(self, noisy_latents, timesteps, encoder_hidden_states, point_embeds, image_embeds, V_matrix, P_matrix):
+        point_tokens = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
         feature_tokens = self.image_proj_model(image_embeds)
 
         ip_hidden_states = torch.cat([encoder_hidden_states, feature_tokens], dim = 1)
@@ -242,12 +242,17 @@ def main():
     unet_copy.requires_grad_(True)
 
     raw_base_points=load_base_points(args.base_point_path).to(accelerator.device)
-    image_proj_model_point = VPmatrixPointsV3(raw_base_points).to(accelerator.device)
+    vpmatrix_points_sd = VPmatrixPointsV1(raw_base_points).to(accelerator.device)
     image_proj_model = ImageProjModel(
         cross_attention_dim=unet.config.cross_attention_dim,
         clip_embeddings_dim=image_encoder.config.projection_dim,
         clip_extra_context_tokens=4,
     ).to(accelerator.device)
+    image_proj_model_point = VPProjModel(
+        cross_attention_dim=unet.config.cross_attention_dim,
+        clip_embeddings_dim=image_encoder.config.projection_dim,
+        clip_extra_context_tokens=4,
+    )
 
     attn_procs = {}
     unet_sd = unet.state_dict()
@@ -370,6 +375,11 @@ def main():
                     inputs = processor(images=batch['feature'], return_tensors="pt") 
                     image_tensor = inputs["pixel_values"] 
                     image_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
+                with torch.no_grad():
+                    base_points = vpmatrix_points_sd(batch['view_matrix'], batch['projection_matrix'])
+                    inputs = processor(images=base_points, return_tensors="pt") 
+                    image_tensor = inputs["pixel_values"]
+                    point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
 
                 if "text_input_ids" in batch:
                     with torch.no_grad():
@@ -385,7 +395,7 @@ def main():
                     encoder_hidden_states = text_encoder(text_input_ids.to(accelerator.device))[0]
                     encoder_hidden_states = encoder_hidden_states.repeat(args.train_batch_size, 1, 1) 
                 
-                noise_pred = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, image_embeds, batch['view_matrix'], batch['projection_matrix'])
+                noise_pred = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, point_embeds, image_embeds, batch['view_matrix'], batch['projection_matrix'])
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
             
                 # Gather the losses across all processes for logging (if we use distributed training).
