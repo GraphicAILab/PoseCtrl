@@ -111,7 +111,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=2000,
+        default=500,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
@@ -252,7 +252,7 @@ def main():
         cross_attention_dim=unet.config.cross_attention_dim,
         clip_embeddings_dim=image_encoder.config.projection_dim,
         clip_extra_context_tokens=4,
-    )
+    ).to(accelerator.device)
 
     attn_procs = {}
     unet_sd = unet.state_dict()
@@ -386,7 +386,7 @@ def main():
                         encoder_hidden_states = text_encoder(batch["text_input_ids"].to(accelerator.device))[0]
                 else:
                     text_input_ids = tokenizer(
-                            "a highly detailed anime figure, in front of a pure black background",
+                            "a highly detailed anime person, in front of a pure black background",
                             max_length=tokenizer.model_max_length,
                             padding="max_length",
                             truncation=True,

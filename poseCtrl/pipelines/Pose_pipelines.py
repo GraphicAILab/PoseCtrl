@@ -254,7 +254,7 @@ class PoseControlNet:
         
         # 不需要prompt
         if prompt is None:
-            prompt = "a highly detailed anime figure, in front of a pure black background"
+            prompt = "a highly detailed anime person, in front of a pure black background"
             # prompt = "girl"
         if negative_prompt is None:
             # negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality, noise, cluttered background"
@@ -424,11 +424,6 @@ class PoseControlNetV3_1:
 
     @torch.inference_mode()
     def get_image_embeds(self, pil_image=None, clip_image_embeds=None):
-        """ 修改: 这个逻辑应该是通过self.VP矩阵乘self.BasePoints
-            输出: image_prompt_embeds, uncond_image_prompt_embeds
-            但是之后不需要和原来的text embeds拼接,因为没有text embeds,
-            感觉还是有点好,这个后来再看
-        """
         if pil_image is not None:
             if isinstance(pil_image, Image.Image):
                 pil_image = [pil_image]
@@ -456,7 +451,7 @@ class PoseControlNetV3_1:
             if isinstance(attn_processor, PoseAttnProcessorV1):
                 attn_processor.scale = scale
     
-
+    @torch.inference_mode()
     def custom_inference(self,
                      ip_prompt_embeds,
                      point_prompt_embeds,
