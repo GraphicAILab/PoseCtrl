@@ -19,6 +19,7 @@ class CustomDataset(Dataset):
         self.transform = transform or transforms.Compose([
             transforms.Resize((512, 512)),  
             transforms.ToTensor(), 
+            transforms.Normalize([0.5], [0.5])
         ])
         self.samples = []
 
