@@ -504,7 +504,7 @@ class PoseCtrlV2:
         if pil_image is not None:
             if isinstance(pil_image, Image.Image):
                 pil_image = [pil_image]
-            clip_image = self.clip_image_processor(images=pil_image, return_tensors="pt").pixel_values
+            clip_image = self.clip_image_processor(images=pil_image, return_tensors="pt",do_rescale=False).pixel_values
             clip_image_embeds = self.image_encoder(clip_image.to(self.device, dtype=torch.float16)).image_embeds
         else:
             clip_image_embeds = clip_image_embeds.to(self.device, dtype=torch.float16)
@@ -515,7 +515,7 @@ class PoseCtrlV2:
     @torch.inference_mode()
     def get_vpmatrix_points(self, V_matrix, P_matrix):
         base_points = self.vpmatrix_points_sd(V_matrix, P_matrix)
-        inputs = self.clip_image_processor(images=base_points, return_tensors="pt").pixel_values
+        inputs = self.clip_image_processor(images=base_points, return_tensors="pt",do_rescale=False).pixel_values
         point_embeds = self.image_encoder(inputs.to(self.device, dtype=torch.float16)).image_embeds
 
         image_prompt_embeds = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)

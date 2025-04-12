@@ -18,6 +18,8 @@ import sys
 notebook_path = os.getcwd()
 sys.path.append(notebook_path)
 sys.path.append(os.path.join(notebook_path, "poseCtrl"))
+sys.path.append('/content/drive/MyDrive/PoseCtrl')
+sys.path.append('/content/drive/MyDrive/PoseCtrl/poseCtrl')
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessorV1
 from poseCtrl.data.dataset import CustomDataset, load_base_points
@@ -107,7 +109,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=2000,
+        default=1000,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
