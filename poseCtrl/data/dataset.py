@@ -21,6 +21,10 @@ class CustomDataset(Dataset):
             transforms.ToTensor(), 
             transforms.Normalize([0.5], [0.5])
         ])
+        self.transform_feature = transform or transforms.Compose([
+            transforms.Resize((512, 512)),  
+            transforms.ToTensor(), 
+        ])
         self.samples = []
 
         for folder_name in os.listdir(root_dir):
@@ -89,7 +93,7 @@ class CustomDataset(Dataset):
 
         # 处理图像
         image = self.transform(image)  # **确保转换成 Tensor**
-        feature = self.transform(feature)
+        feature = self.transform_feature(feature)
         # 确保矩阵是 Tensor
         projection_matrix = torch.tensor(projection_matrix, dtype=torch.float32)
         view_matrix = torch.tensor(view_matrix, dtype=torch.float32)
