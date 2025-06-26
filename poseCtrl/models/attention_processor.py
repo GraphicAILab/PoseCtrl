@@ -591,7 +591,7 @@ class PoseAttnProcessorV4(nn.Module):
             encoder_hidden_states = hidden_states
         else:
             # get encoder_hidden_states, feature_hidden_states
-            end_pos_point = end_pos - self.num_point_tokens
+            end_pos_point = encoder_hidden_states.shape[1] - self.num_point_tokens
             encoder_hidden_states, point_hidden_states = (
                 encoder_hidden_states[:, :end_pos_point, :],
                 encoder_hidden_states[:, end_pos_point:, :],

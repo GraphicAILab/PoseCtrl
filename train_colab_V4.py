@@ -37,8 +37,9 @@ from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjec
 import sys
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(os.path.join(current_dir))
-sys.path.append(os.path.join(current_dir, "poseCtrl"))
+current_dir = os.path.join(current_dir, "PoseCtrl")
+sys.path.append(current_dir)
+sys.path.append(os.path.join(current_dir,"poseCtrl"))
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessorV4
 from poseCtrl.data.dataset import CustomDataset_v4, load_base_points
@@ -72,7 +73,7 @@ def parse_args():
     parser.add_argument(
         "--data_root_path",
         type=str,
-        default="/content/drive/MyDrive/images_01/image",
+        default="/content/image",
         # required=True,
         help="Training data root path",
     )
@@ -142,7 +143,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=1000,
+        default=2000,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
