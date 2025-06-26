@@ -36,11 +36,9 @@ from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection, CLIPProcessor
 import sys
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
-notebook_path = os.getcwd()
-sys.path.append(notebook_path)
-sys.path.append(os.path.join(notebook_path, "poseCtrl"))
-sys.path.append('/content/drive/MyDrive/PoseCtrl')
-sys.path.append('/content/drive/MyDrive/PoseCtrl/poseCtrl')
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(current_dir))
+sys.path.append(os.path.join(current_dir, "poseCtrl"))
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessorV4
 from poseCtrl.data.dataset import CustomDataset_v4, load_base_points
@@ -74,7 +72,21 @@ def parse_args():
     parser.add_argument(
         "--data_root_path",
         type=str,
-        default="/content/pic",
+        default="/content/drive/MyDrive/images_01/image",
+        # required=True,
+        help="Training data root path",
+    )
+    parser.add_argument(
+        "--CAMERA_PARAMS_FILE",
+        type=str,
+        default="/content/drive/MyDrive/images_01/camera_params.txt",
+        # required=True,
+        help="Training data root path",
+    )
+    parser.add_argument(
+        "--IMAGE_FEATURES_FILE",
+        type=str,
+        default="/content/drive/MyDrive/images_01/image_features.txt",
         # required=True,
         help="Training data root path",
     )
@@ -288,7 +300,7 @@ def main():
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # dataloader
-    train_dataset = CustomDataset_v4(args.data_root_path)
+    train_dataset = CustomDataset_v4(args.data_root_path, camera_params_file=args.CAMERA_PARAMS_FILE, image_features_file=args.IMAGE_FEATURES_FILE)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
