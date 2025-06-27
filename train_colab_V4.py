@@ -42,7 +42,7 @@ sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir,"poseCtrl"))
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessorV4
-from poseCtrl.data.dataset import CustomDataset_v4, load_base_points
+from poseCtrl.data.dataset import CustomDataset_v4, load_base_points, CombinedDataset
 from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionInpaintPipelineLegacy, DDIMScheduler, AutoencoderKL
 from PIL import Image
 import numpy as np
@@ -71,9 +71,16 @@ def parse_args():
         help='Path to base model points'
     )
     parser.add_argument(
-        "--data_root_path",
+        "--data_root_path_1",
         type=str,
-        default="/content/image",
+        default="/content/pic",
+        # required=True,
+        help="Training data root path",
+    )
+    parser.add_argument(
+        "--data_root_path_2",
+        type=str,
+        default="/content/drive/MyDrive/images_01/images/image",
         # required=True,
         help="Training data root path",
     )
@@ -303,7 +310,13 @@ def main():
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # dataloader
-    train_dataset = CustomDataset_v4(args.data_root_path, camera_params_file=args.CAMERA_PARAMS_FILE, image_features_file=args.IMAGE_FEATURES_FILE)
+    # train_dataset = CustomDataset_v4(args.data_root_path, camera_params_file=args.CAMERA_PARAMS_FILE, image_features_file=args.IMAGE_FEATURES_FILE)
+    train_dataset = CombinedDataset(
+    path1=args.data_root_path_1,
+    path2=args.data_root_path_2,
+    camera_params_file_v4=args.CAMERA_PARAMS_FILE,
+    image_features_file_v4=args.IMAGE_FEATURES_FILE
+)
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,

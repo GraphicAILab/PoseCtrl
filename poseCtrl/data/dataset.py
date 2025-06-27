@@ -416,3 +416,223 @@ class CustomDataset_v4(Dataset):
 #             print(f"创建或迭代 DataLoader 时出错: {e}")
 #     else:
 #         print("未能从文件中加载任何样本。请检查文件内容和路径。")
+class CombinedDataset(Dataset):
+    """
+    A unified dataset loader that can load data from two different sources,
+    each with its own structure and loading logic.
+    """
+    def __init__(self, path1=None, path2=None, camera_params_file_v4=None,
+                 image_features_file_v4=None, transform=None):
+        """
+        Initializes the dataset by loading data from the provided paths.
+
+        Args:
+            path1 (str, optional): The root directory for the first dataset format (CustomDataset).
+            path2 (str, optional): The root directory for the second dataset format (CustomDataset_v4).
+            camera_params_file_v4 (str, optional): Path to the camera parameters file for path2.
+            image_features_file_v4 (str, optional): Path to the image features (JSON) file for path2.
+            transform (callable, optional): Optional transform to be applied to a sample.
+        """
+        self.transform = transform or transforms.Compose([
+            ResizeAndPad(512, fill_color=(255, 255, 255)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        ])
+        
+        # This transform is specific to the 'feature' image in the first dataset
+        self.transform_feature = transforms.Compose([
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+        ])
+
+        self.samples = []
+
+        if path1:
+            self._load_from_path1(path1)
+
+        if path2 and camera_params_file_v4 and image_features_file_v4:
+            self._load_from_path2(path2, camera_params_file_v4, image_features_file_v4)
+
+    def _read_matrices_from_file(self, file_path):
+        """Reads a file containing multiple 4x4 matrices."""
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+            matrices = []
+            matrix = []
+            for line in lines:
+                if 'Capture' not in line:
+                    try:
+                        row = list(map(float, line.strip().split()))
+                        if len(row) == 4:
+                            matrix.append(row)
+                            if len(matrix) == 4:
+                                matrices.append(np.array(matrix))
+                                matrix = []
+                    except ValueError:
+                        continue
+            return matrices
+
+    def _load_from_path1(self, root_dir):
+        """Loads data using the logic from the original CustomDataset."""
+        print(f"Loading data from path1: {root_dir}")
+        for folder_name in os.listdir(root_dir):
+            folder_path = os.path.join(root_dir, folder_name)
+            if os.path.isdir(folder_path):
+                data_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.endswith('.txt')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+                image_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg')) and f.lower().startswith('capture')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+
+                feature_file = os.path.join(folder_path, "feature.png")
+                if not os.path.exists(feature_file):
+                    print(f"Warning: 'feature.png' not found in {folder_path}. Skipping folder.")
+                    continue
+
+                projection_matrix_file = None
+                view_matrix_file = None
+                for data_file in data_files:
+                    if 'projectionMatrix' in data_file:
+                        projection_matrix_file = os.path.join(folder_path, data_file)
+                    elif 'viewMatrix' in data_file:
+                        view_matrix_file = os.path.join(folder_path, data_file)
+
+                if projection_matrix_file and view_matrix_file and image_files:
+                    projection_matrices = self._read_matrices_from_file(projection_matrix_file)
+                    view_matrices = self._read_matrices_from_file(view_matrix_file)
+                    
+                    # Ensure the number of matrices matches the number of images
+                    if len(projection_matrices) == len(view_matrices) == len(image_files):
+                        for proj, view, img_name in zip(projection_matrices, view_matrices, image_files):
+                            sample = {
+                                'type': 'v1',
+                                'image_path': os.path.join(folder_path, img_name),
+                                'projection_matrix': proj,
+                                'view_matrix': view,
+                                'feature_path': feature_file,
+                                'text': "highly detailed, anime"  # Default text
+                            }
+                            self.samples.append(sample)
+                    else:
+                        print(f"Warning: Mismatch in number of items in {folder_name}. Skipping.")
+
+
+    def _load_from_path2(self, root_dir, camera_params_file, image_features_file):
+        """Loads data using the logic from CustomDataset_v4."""
+        print(f"Loading data from path2: {root_dir}")
+        # 1. Load image features (text descriptions)
+        try:
+            with open(image_features_file, 'r', encoding='utf-8') as f:
+                image_features = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Error loading image features file '{image_features_file}': {e}")
+            image_features = {}
+
+        # 2. Parse camera parameters file
+        try:
+            with open(camera_params_file, 'r') as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            print(f"Error: Camera params file not found at '{camera_params_file}'")
+            return
+
+        current_image_path = None
+        current_p_matrix = []
+        current_v_matrix = []
+        parsing_mode = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            if any(ext in line for ext in ['.jpg', '.png', '.webp']):
+                if current_image_path and len(current_p_matrix) == 4 and len(current_v_matrix) == 4:
+                    self._add_v4_sample(root_dir, current_image_path, current_p_matrix, current_v_matrix, image_features)
+                
+                current_image_path = line.replace(':', '')
+                current_p_matrix = []
+                current_v_matrix = []
+                parsing_mode = None
+            elif line == 'P:':
+                parsing_mode = 'P'
+            elif line == 'V:':
+                parsing_mode = 'V'
+            else:
+                try:
+                    row_data = list(map(float, re.findall(r'-?\d+\.\d+(?:e-?\d+)?', line)))
+                    if len(row_data) == 4:
+                        if parsing_mode == 'P' and len(current_p_matrix) < 4:
+                            current_p_matrix.append(row_data)
+                        elif parsing_mode == 'V' and len(current_v_matrix) < 4:
+                            current_v_matrix.append(row_data)
+                except ValueError:
+                    continue
+        
+        if current_image_path and len(current_p_matrix) == 4 and len(current_v_matrix) == 4:
+            self._add_v4_sample(root_dir, current_image_path, current_p_matrix, current_v_matrix, image_features)
+
+    def _add_v4_sample(self, root_dir, image_path, p_matrix, v_matrix, image_features):
+        """Helper to construct and add a sample from path2."""
+        image_filename = os.path.basename(image_path)
+        full_image_path = os.path.join(root_dir, image_filename)
+        
+        text_prompt = ", ".join(image_features.get(image_filename, []))
+
+        if os.path.exists(full_image_path):
+            sample = {
+                'type': 'v4',
+                'image_path': full_image_path,
+                'projection_matrix': np.array(p_matrix, dtype=np.float32),
+                'view_matrix': np.array(v_matrix, dtype=np.float32),
+                'text': text_prompt
+            }
+            self.samples.append(sample)
+        else:
+            print(f"Warning: Image file '{full_image_path}' not found. Skipping.")
+
+    def __len__(self):
+        """Returns the total number of samples in the dataset."""
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        """
+        Retrieves a sample from the dataset at the given index.
+        """
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        sample_data = self.samples[idx]
+        
+        try:
+            image = Image.open(sample_data['image_path']).convert('RGB')
+        except IOError as e:
+            raise IOError(f"Error opening image file '{sample_data['image_path']}': {e}")
+        
+        # Apply the primary transform to the main image
+        image_tensor = self.transform(image)
+
+        # Convert matrices to tensors
+        p_matrix_tensor = torch.tensor(sample_data['projection_matrix'], dtype=torch.float32)
+        v_matrix_tensor = torch.tensor(sample_data['view_matrix'], dtype=torch.float32)
+
+        # Prepare the final sample dictionary
+        final_sample = {
+            'image': image_tensor,
+            'projection_matrix': p_matrix_tensor,
+            'view_matrix': v_matrix_tensor,
+            'text': sample_data['text']
+        }
+
+        # For v1 data, load and transform the 'feature' image
+        if sample_data['type'] == 'v1':
+            try:
+                feature_image = Image.open(sample_data['feature_path']).convert('RGB')
+                final_sample['feature'] = self.transform_feature(feature_image)
+            except IOError as e:
+                 raise IOError(f"Error opening feature file '{sample_data['feature_path']}': {e}")
+
+        return final_sample
