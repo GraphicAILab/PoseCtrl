@@ -86,16 +86,23 @@ def parse_args():
         help="Training data root path",
     )
     parser.add_argument(
-        "--CAMERA_PARAMS_FILE",
+        "--data_root_path_3",
         type=str,
-        default="/content/drive/MyDrive/images_01/camera_params.txt",
+        default="/content/drive/MyDrive/images_01/images/image_mirror",
         # required=True,
         help="Training data root path",
     )
     parser.add_argument(
-        "--IMAGE_FEATURES_FILE",
+        "--data_root_path_4",
         type=str,
-        default="/content/drive/MyDrive/images_01/image_features.txt",
+        default="/content/drive/MyDrive/images_01/images/image_left",
+        # required=True,
+        help="Training data root path",
+    )
+    parser.add_argument(
+        "--data_root_path_5",
+        type=str,
+        default="/content/drive/MyDrive/images_01/images/image_right",
         # required=True,
         help="Training data root path",
     )
@@ -238,6 +245,7 @@ def custom_collate_fn(batch):
         collated_batch['feature'] = torch.stack(feature_tensors)
 
     return collated_batch
+
 class posectrl(nn.Module):
     def __init__(self, unet, image_proj_model_point, atten_modules, ckpt_path=None):
         super().__init__()
@@ -366,10 +374,11 @@ def main():
     # dataloader
     # train_dataset = CustomDataset_v4(args.data_root_path, camera_params_file=args.CAMERA_PARAMS_FILE, image_features_file=args.IMAGE_FEATURES_FILE)
     train_dataset = CombinedDataset(
-      path1=args.data_root_path_1,
-      path2=args.data_root_path_2,
-      camera_params_file_v4=args.CAMERA_PARAMS_FILE,
-      image_features_file_v4=args.IMAGE_FEATURES_FILE
+        path1=args.data_root_path_1,
+        path2=args.data_root_path_2,
+        # path3=args.data_root_path_3,
+        # path4=args.data_root_path_4,
+        # path5=args.data_root_path_5,
     )
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,

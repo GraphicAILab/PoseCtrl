@@ -416,7 +416,7 @@ class CustomDataset_v4(Dataset):
 #             print(f"创建或迭代 DataLoader 时出错: {e}")
 #     else:
 #         print("未能从文件中加载任何样本。请检查文件内容和路径。")
-class CombinedDataset(Dataset):
+class CombinedDataset_(Dataset):
     """
     A unified dataset loader that can load data from two different sources,
     each with its own structure and loading logic.
@@ -634,5 +634,252 @@ class CombinedDataset(Dataset):
                 final_sample['feature'] = self.transform_feature(feature_image)
             except IOError as e:
                  raise IOError(f"Error opening feature file '{sample_data['feature_path']}': {e}")
+
+        return final_sample
+    
+
+import os
+import json
+import re
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+from torchvision import transforms
+from PIL import Image
+
+# 假设 ResizeAndPad 是您自定义的转换，这里保留其引用
+# from your_transforms import ResizeAndPad 
+
+class CombinedDataset(Dataset):
+    """
+    一个统一的数据集加载器，可以从多个不同的数据源加载数据。
+    - path1 使用 v1 格式。
+    - path2, path3, path4, path6 使用 v4 格式。
+    """
+    def __init__(self, path1=None, path2=None, path3=None, path4=None, path5=None, transform=None):
+        """
+        通过加载所提供路径中的数据来初始化数据集。
+
+        Args:
+            path1 (str, optional): v1 数据集格式的根目录。
+            path2 (str, optional): v4 数据集格式的根目录。
+            path3 (str, optional): v4 数据集格式的根目录。
+            path4 (str, optional): v4 数据集格式的根目录。
+            path6 (str, optional): v4 数据集格式的根目录。
+            transform (callable, optional): 应用于样本的可选转换。
+        """
+        # 如果未提供 transform，则使用默认的转换流程
+        self.transform = transform or transforms.Compose([
+            # 假设 ResizeAndPad 是一个有效的转换类
+            # ResizeAndPad(512, fill_color=(255, 255, 255)),
+            transforms.Resize((512, 512)), # 使用标准的Resize作为替代
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        ])
+        
+        # 这个转换特定于 v1 数据集中的 'feature' 图像
+        self.transform_feature = transforms.Compose([
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+        ])
+
+        self.samples = []
+
+        # 加载 v1 格式的数据
+        if path1:
+            self._load_from_path1(path1)
+
+        # 将所有 v4 格式的路径集中处理
+        v4_style_paths = {
+            "path2": path2,
+            "path3": path3,
+            "path4": path4,
+            "path5": path5
+        }
+
+        for path_name, root_path in v4_style_paths.items():
+            if root_path:
+                self._load_v4_style_data(root_path, path_name)
+
+    def _read_matrices_from_file(self, file_path):
+        """读取包含多个 4x4 矩阵的文件。"""
+        # ... (此方法无需改动)
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+            matrices = []
+            matrix = []
+            for line in lines:
+                if 'Capture' not in line:
+                    try:
+                        row = list(map(float, line.strip().split()))
+                        if len(row) == 4:
+                            matrix.append(row)
+                            if len(matrix) == 4:
+                                matrices.append(np.array(matrix))
+                                matrix = []
+                    except ValueError:
+                        continue
+            return matrices
+
+    def _load_from_path1(self, root_dir):
+        """使用 v1 数据集的逻辑加载数据。"""
+        # ... (此方法无需改动)
+        print(f"Loading data from path1: {root_dir}")
+        for folder_name in os.listdir(root_dir):
+            folder_path = os.path.join(root_dir, folder_name)
+            if os.path.isdir(folder_path):
+                # ... (内部逻辑保持不变)
+                data_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.endswith('.txt')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+                image_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg')) and f.lower().startswith('capture')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+                feature_file = os.path.join(folder_path, "feature.png")
+                if not os.path.exists(feature_file):
+                    print(f"Warning: 'feature.png' not found in {folder_path}. Skipping folder.")
+                    continue
+                projection_matrix_file = None
+                view_matrix_file = None
+                for data_file in data_files:
+                    if 'projectionMatrix' in data_file:
+                        projection_matrix_file = os.path.join(folder_path, data_file)
+                    elif 'viewMatrix' in data_file:
+                        view_matrix_file = os.path.join(folder_path, data_file)
+                if projection_matrix_file and view_matrix_file and image_files:
+                    projection_matrices = self._read_matrices_from_file(projection_matrix_file)
+                    view_matrices = self._read_matrices_from_file(view_matrix_file)
+                    if len(projection_matrices) == len(view_matrices) == len(image_files):
+                        for proj, view, img_name in zip(projection_matrices, view_matrices, image_files):
+                            sample = {
+                                'type': 'v1',
+                                'image_path': os.path.join(folder_path, img_name),
+                                'projection_matrix': proj,
+                                'view_matrix': view,
+                                'feature_path': feature_file,
+                                'text': "highly detailed, anime"
+                            }
+                            self.samples.append(sample)
+                    else:
+                        print(f"Warning: Mismatch in number of items in {folder_name}. Skipping.")
+
+    def _load_v4_style_data(self, root_dir, path_name):
+        """
+        加载 v4 风格的数据集。
+        假定 'camera_params.txt' 和 'image_features.json' 文件位于 root_dir 中。
+
+        Args:
+            root_dir (str): 数据集的根目录。
+            path_name (str): 用于日志记录的路径名称 (例如 'path2')。
+        """
+        print(f"Loading data from {path_name}: {root_dir}")
+        
+        camera_params_file = os.path.join(root_dir, 'camera_params.txt')
+        image_features_file = os.path.join(root_dir, 'image_features.txt')
+
+        try:
+            with open(image_features_file, 'r', encoding='utf-8') as f:
+                image_features = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"Warning for {path_name}: Error or file not found for image features '{image_features_file}': {e}. Proceeding without text prompts.")
+            image_features = {}
+
+        try:
+            with open(camera_params_file, 'r') as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            print(f"Error for {path_name}: Camera params file not found at '{camera_params_file}'. Skipping this data source.")
+            return
+
+        current_image_path = None
+        current_p_matrix = []
+        current_v_matrix = []
+        parsing_mode = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            if any(ext in line for ext in ['.jpg', '.png', '.webp']):
+                if current_image_path and len(current_p_matrix) == 4 and len(current_v_matrix) == 4:
+                    self._add_v4_sample(root_dir, current_image_path, current_p_matrix, current_v_matrix, image_features)
+                current_image_path = line.replace(':', '')
+                current_p_matrix, current_v_matrix, parsing_mode = [], [], None
+            elif line == 'P:':
+                parsing_mode = 'P'
+            elif line == 'V:':
+                parsing_mode = 'V'
+            else:
+                try:
+                    row_data = list(map(float, re.findall(r'-?\d+\.\d+(?:e-?\d+)?', line)))
+                    if len(row_data) == 4:
+                        if parsing_mode == 'P' and len(current_p_matrix) < 4:
+                            current_p_matrix.append(row_data)
+                        elif parsing_mode == 'V' and len(current_v_matrix) < 4:
+                            current_v_matrix.append(row_data)
+                except ValueError:
+                    continue
+        
+        if current_image_path and len(current_p_matrix) == 4 and len(current_v_matrix) == 4:
+            self._add_v4_sample(root_dir, current_image_path, current_p_matrix, current_v_matrix, image_features)
+
+    def _add_v4_sample(self, root_dir, image_path, p_matrix, v_matrix, image_features):
+        """辅助函数，用于构建和添加一个 v4 风格的样本。"""
+        # ... (此方法无需改动)
+        image_filename = os.path.basename(image_path)
+        full_image_path = os.path.join(root_dir, image_filename)
+        text_prompt = ", ".join(image_features.get(image_filename, []))
+
+        if os.path.exists(full_image_path):
+            sample = {
+                'type': 'v4',  # 所有这些路径的数据都标记为 v4 类型
+                'image_path': full_image_path,
+                'projection_matrix': np.array(p_matrix, dtype=np.float32),
+                'view_matrix': np.array(v_matrix, dtype=np.float32),
+                'text': text_prompt
+            }
+            self.samples.append(sample)
+        else:
+            print(f"Warning: Image file '{full_image_path}' not found. Skipping.")
+
+    def __len__(self):
+        """返回数据集中的样本总数。"""
+        # ... (此方法无需改动)
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        """从数据集中检索给定索引的样本。"""
+        # ... (此方法无需改动)
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        sample_data = self.samples[idx]
+        
+        try:
+            image = Image.open(sample_data['image_path']).convert('RGB')
+        except IOError as e:
+            raise IOError(f"Error opening image file '{sample_data['image_path']}': {e}")
+        
+        image_tensor = self.transform(image)
+        p_matrix_tensor = torch.tensor(sample_data['projection_matrix'], dtype=torch.float32)
+        v_matrix_tensor = torch.tensor(sample_data['view_matrix'], dtype=torch.float32)
+
+        final_sample = {
+            'image': image_tensor,
+            'projection_matrix': p_matrix_tensor,
+            'view_matrix': v_matrix_tensor,
+            'text': sample_data['text']
+        }
+
+        # 对于 v1 类型的数据，加载并转换 'feature' 图像
+        if sample_data['type'] == 'v1':
+            try:
+                feature_image = Image.open(sample_data['feature_path']).convert('RGB')
+                final_sample['feature'] = self.transform_feature(feature_image)
+            except IOError as e:
+                raise IOError(f"Error opening feature file '{sample_data['feature_path']}': {e}")
 
         return final_sample
