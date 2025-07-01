@@ -668,21 +668,17 @@ class CombinedDataset(Dataset):
             path6 (str, optional): v4 数据集格式的根目录。
             transform (callable, optional): 应用于样本的可选转换。
         """
-        # 如果未提供 transform，则使用默认的转换流程
         self.transform = transform or transforms.Compose([
-            # 假设 ResizeAndPad 是一个有效的转换类
-            # ResizeAndPad(512, fill_color=(255, 255, 255)),
-            transforms.Resize((512, 512)), # 使用标准的Resize作为替代
+            ResizeAndPad(512, fill_color=(255, 255, 255)),
             transforms.ToTensor(),
             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         ])
         
-        # 这个转换特定于 v1 数据集中的 'feature' 图像
+        # This transform is specific to the 'feature' image in the first dataset
         self.transform_feature = transforms.Compose([
             transforms.Resize((512, 512)),
             transforms.ToTensor(),
         ])
-
         self.samples = []
 
         # 加载 v1 格式的数据

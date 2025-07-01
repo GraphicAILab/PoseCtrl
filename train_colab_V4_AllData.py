@@ -115,7 +115,7 @@ def parse_args():
     parser.add_argument(
         "--val_data_root_path_2",
         type=str,
-        default="/content/drive/MyDrive/images_01/images/image_test",
+        default="/content/drive/MyDrive/images_01/image_test",
         # required=True,
         help="Training data root path",
     )
@@ -171,7 +171,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=2000,
+        default=1000,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
@@ -210,24 +210,33 @@ from torchvision import transforms
 def denormalize(tensor, mean, std):
     return tensor * std + mean
 
+def image_grid(imgs, rows, cols):
+    assert len(imgs) == rows*cols
+
+    w, h = imgs[0].size
+    grid = Image.new('RGB', size=(cols*w, rows*h))
+    grid_w, grid_h = grid.size
+    
+    for i, img in enumerate(imgs):
+        grid.paste(img, box=(i%cols*w, i//cols*h))
+    return grid
+
 def validation(pose_model, save_path, val_dataloader, device):
     os.makedirs(save_path, exist_ok=True)
-    pose_model.eval()
-
     with torch.no_grad():
         for idx, data in enumerate(val_dataloader):
             image = data['image'][0].to(device)
-            vmatrix = data['view_matrix'].to(torch.float16).unsqueeze(0).to(device)
-            pmatrix = data['projection_matrix'].to(torch.float16).unsqueeze(0).to(device)
+            vmatrix = data['view_matrix'].to(torch.float32).to(device)
+            pmatrix = data['projection_matrix'].to(torch.float32).to(device)
             text = 'highly detailed, anime, 1girl, blue_eyes, long_hair, dress, smile, simple_background'
 
             images = pose_model.generate(prompt=text, num_samples=4, num_inference_steps=50, seed=42, V_matrix=vmatrix, P_matrix=pmatrix)
-
+            images = image_grid(images, 1, 4)
             save_img_path = os.path.join(save_path, f"image_{idx}.png")
             image = denormalize(image, 0.5, 0.5)
             image_pil = transforms.ToPILImage()(image)
 
-            combined_image = Image.new('RGB', (image_pil.width + images.width, image_pil.height))
+            combined_image = Image.new('RGB', (5*image_pil.width, image_pil.height))
             combined_image.paste(image_pil, (0, 0))
             combined_image.paste(images, (image_pil.width, 0))
             combined_image.save(save_img_path)
@@ -381,15 +390,7 @@ def main():
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     image_encoder.requires_grad_(False)
-    pipe = StableDiffusionPipeline(
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        vae=vae,
-        unet=unet,
-        scheduler=noise_scheduler,
-        safety_checker=None, 
-        feature_extractor=None 
-    )
+    
     #vp-matrix encoder
     raw_base_points1=load_base_points(args.base_point_path1)  
     raw_base_points2=load_base_points(args.base_point_path2) 
@@ -440,7 +441,15 @@ def main():
     vae.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
     image_encoder.to(accelerator.device, dtype=weight_dtype)
-    
+    pipe = StableDiffusionPipeline(
+        tokenizer=tokenizer,
+        text_encoder=text_encoder,
+        vae=vae,
+        unet=unet,
+        scheduler=noise_scheduler,
+        safety_checker=None, 
+        feature_extractor=None 
+    )
     # optimizer
     params_to_opt = itertools.chain(pose_ctrl.image_proj_model_point.parameters(),  pose_ctrl.atten_modules.parameters())
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -469,7 +478,7 @@ def main():
 
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_sampler=GroupedBatchSampler(train_dataset, batch_size=1),
+        batch_sampler=GroupedBatchSampler(val_dataset, batch_size=1),
         collate_fn=custom_collate_fn,
         num_workers=args.dataloader_num_workers,
     )
@@ -517,7 +526,7 @@ def main():
                 with torch.no_grad():  
                     if batch['type'][0]=='v1':
                         base_points = vpmatrix_points_sd1(batch['view_matrix'], batch['projection_matrix'])
-                    elif batch['type'[0]]=='v4':
+                    elif batch['type'][0]=='v4':
                         base_points = vpmatrix_points_sd2(batch['view_matrix'], batch['projection_matrix'])
                     inputs = processor(images=base_points, return_tensors="pt",do_rescale=False) 
                     image_tensor = inputs["pixel_values"]
@@ -556,12 +565,13 @@ def main():
             
             if global_step % args.save_steps == 0:
                 save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
+                os.makedirs(save_path, exist_ok=True)
                 # accelerator.save_state(save_path)
                 # torch.save(pose_ctrl.state_dict(), os.path.join(save_path,'model.pth'))
-                pose_model = PoseCtrlV4_val(pipe, image_encoder, raw_base_points2, torch.device("cuda"))
+                pose_model = PoseCtrlV4_val(pipe, image_encoder, raw_base_points2.to(torch.float32), torch.device("cuda"))
 
                 change_checkpoint(pose_ctrl.state_dict(), save_path)
-                validation(pose_model, save_path, val_dataloader, torch.device("cuda"))
+                # validation(pose_model, save_path, val_dataloader, torch.device("cuda"))
 
 
             begin = time.perf_counter()

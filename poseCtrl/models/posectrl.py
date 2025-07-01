@@ -770,7 +770,7 @@ class PoseCtrlV4_val:
     def __init__(self, sd_pipe, image_encoder, raw_base_points, device, num_tokens=4):
         self.device = device
         self.num_tokens = num_tokens
-        self.raw_base_points = raw_base_points.to(torch.float16)
+        self.raw_base_points = raw_base_points.to(torch.float32)
         self.pipe = sd_pipe.to(self.device)
 
         # load image encoder
@@ -785,7 +785,7 @@ class PoseCtrlV4_val:
             cross_attention_dim=self.pipe.unet.config.cross_attention_dim,
             clip_embeddings_dim=self.image_encoder.config.projection_dim,
             clip_extra_context_tokens=4,
-        ).to(self.device, dtype=torch.float16)
+        ).to(self.device, dtype=torch.float32)
         return image_proj_model_point
     
     def init_point(self):
@@ -796,10 +796,10 @@ class PoseCtrlV4_val:
     def get_vpmatrix_points(self, V_matrix, P_matrix):
         base_points = self.vpmatrix_points_sd(V_matrix, P_matrix)
         inputs = self.clip_image_processor(images=base_points, return_tensors="pt",do_rescale=False).pixel_values
-        point_embeds = self.image_encoder(inputs.to(self.device, dtype=torch.float16)).image_embeds
+        point_embeds = self.image_encoder(inputs.to(self.device, dtype=torch.float32)).image_embeds
 
-        image_prompt_embeds = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
-        uncond_image_prompt_embeds = self.image_proj_model_point(torch.zeros_like(point_embeds),V_matrix, P_matrix)
+        image_prompt_embeds = self.image_proj_model_point(point_embeds.to(torch.float32), V_matrix, P_matrix)
+        uncond_image_prompt_embeds = self.image_proj_model_point(torch.zeros_like(point_embeds).to(torch.float32),V_matrix, P_matrix)
         return image_prompt_embeds, uncond_image_prompt_embeds
 
 
@@ -862,10 +862,10 @@ class PoseCtrlV4_val:
             negative_prompt_embeds = torch.cat([negative_prompt_embeds_,uncon_vpmatrix_points_embeds], dim=1)
 
         generator = get_generator(seed, self.device)
-
+        self.pipe.to(torch.float16)
         images = self.pipe(
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
+            prompt_embeds=prompt_embeds.to(torch.float16),
+            negative_prompt_embeds=negative_prompt_embeds.to(torch.float16),
             guidance_scale=guidance_scale,
             num_inference_steps=num_inference_steps,
             generator=generator,
