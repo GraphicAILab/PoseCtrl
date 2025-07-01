@@ -219,7 +219,7 @@ def validation(pose_model, save_path, val_dataloader, device):
             image = data['image'][0].to(device)
             vmatrix = data['view_matrix'].to(torch.float16).unsqueeze(0).to(device)
             pmatrix = data['projection_matrix'].to(torch.float16).unsqueeze(0).to(device)
-            text = data['text'][0] 
+            text = 'highly detailed, anime, 1girl, blue_eyes, long_hair, dress, smile, simple_background'
 
             images = pose_model.generate(prompt=text, num_samples=4, num_inference_steps=50, seed=42, V_matrix=vmatrix, P_matrix=pmatrix)
 
