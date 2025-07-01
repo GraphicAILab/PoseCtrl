@@ -171,7 +171,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=1000,
+        default=2000,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
@@ -441,15 +441,7 @@ def main():
     vae.to(accelerator.device, dtype=weight_dtype)
     text_encoder.to(accelerator.device, dtype=weight_dtype)
     image_encoder.to(accelerator.device, dtype=weight_dtype)
-    pipe = StableDiffusionPipeline(
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        vae=vae,
-        unet=unet,
-        scheduler=noise_scheduler,
-        safety_checker=None, 
-        feature_extractor=None 
-    )
+
     # optimizer
     params_to_opt = itertools.chain(pose_ctrl.image_proj_model_point.parameters(),  pose_ctrl.atten_modules.parameters())
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -485,20 +477,6 @@ def main():
 
     # Prepare everything with our `accelerator`.
     pose_ctrl, optimizer, train_dataloader = accelerator.prepare(pose_ctrl, optimizer, train_dataloader)
-    
-
-    val_pipe = StableDiffusionImg2ImgPipeline(
-        scheduler=noise_scheduler,
-        tokenizer=tokenizer,
-        text_encoder=text_encoder,
-        vae=vae,
-        unet=unet,
-        feature_extractor=None, 
-        safety_checker=None,  
-        image_encoder=image_encoder,
-    )
-
-    val_pipe.to(torch.device("cuda"), torch_dtype=torch.float16)
 
     global_step = 0
     for epoch in range(0, args.num_train_epochs): #default is 100
@@ -568,11 +546,21 @@ def main():
                 os.makedirs(save_path, exist_ok=True)
                 # accelerator.save_state(save_path)
                 # torch.save(pose_ctrl.state_dict(), os.path.join(save_path,'model.pth'))
-                pose_model = PoseCtrlV4_val(pipe, image_encoder, raw_base_points2.to(torch.float32), torch.device("cuda"))
+                # unet.eval()
+                # pipe = StableDiffusionPipeline(
+                #     tokenizer=tokenizer,
+                #     text_encoder=text_encoder,
+                #     vae=vae,
+                #     unet=unet,
+                #     scheduler=noise_scheduler,
+                #     safety_checker=None, 
+                #     feature_extractor=None 
+                # ) 
+                # pose_model = PoseCtrlV4_val(pipe, image_encoder, raw_base_points2.to(torch.float32), torch.device("cuda"))
 
                 change_checkpoint(pose_ctrl.state_dict(), save_path)
                 # validation(pose_model, save_path, val_dataloader, torch.device("cuda"))
-
+                # unet.train()
 
             begin = time.perf_counter()
 
