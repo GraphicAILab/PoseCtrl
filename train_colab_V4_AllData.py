@@ -87,14 +87,14 @@ def parse_args():
     parser.add_argument(
         "--data_root_path_2",
         type=str,
-        default="/content/image",
+        default="/content/image_resized",
         # required=True,
         help="Training data root path",
     )
     parser.add_argument(
         "--data_root_path_3",
         type=str,
-        default="/content/drive/MyDrive/images_01/images/image_mirror",
+        default="/content/image_mirror_resized",
         # required=True,
         help="Training data root path",
     )
@@ -399,7 +399,7 @@ def main():
     image_proj_model_point = VPProjModel(
         cross_attention_dim=unet.config.cross_attention_dim,
         clip_embeddings_dim=image_encoder.config.projection_dim,
-        clip_extra_context_tokens=4,
+        clip_extra_context_tokens=32,
     )
     # init pose modules
     attn_procs = {}
@@ -449,9 +449,9 @@ def main():
     # dataloader
     # train_dataset = CustomDataset_v4(args.data_root_path, camera_params_file=args.CAMERA_PARAMS_FILE, image_features_file=args.IMAGE_FEATURES_FILE)
     train_dataset = CombinedDataset(
-        path1=args.data_root_path_1,
+        # path1=args.data_root_path_1,
         path2=args.data_root_path_2,
-        # path3=args.data_root_path_3,
+        path3=args.data_root_path_3,
         # path4=args.data_root_path_4,
         # path5=args.data_root_path_5,
     )
@@ -463,17 +463,17 @@ def main():
         num_workers=args.dataloader_num_workers,
     )
 
-    val_dataset = CombinedDataset(
-        # path1=args.data_root_path_1,
-        path2=args.val_data_root_path_2,
-    )
+    # val_dataset = CombinedDataset(
+    #     # path1=args.data_root_path_1,
+    #     path2=args.val_data_root_path_2,
+    # )
 
-    val_dataloader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_sampler=GroupedBatchSampler(val_dataset, batch_size=1),
-        collate_fn=custom_collate_fn,
-        num_workers=args.dataloader_num_workers,
-    )
+    # val_dataloader = torch.utils.data.DataLoader(
+    #     val_dataset,
+    #     batch_sampler=GroupedBatchSampler(val_dataset, batch_size=1),
+    #     collate_fn=custom_collate_fn,
+    #     num_workers=args.dataloader_num_workers,
+    # )
 
     # Prepare everything with our `accelerator`.
     pose_ctrl, optimizer, train_dataloader = accelerator.prepare(pose_ctrl, optimizer, train_dataloader)
