@@ -607,7 +607,7 @@ class PoseCtrlV2:
     
 class PoseCtrlV4:
     """ 修改: 输入要加上self.VP, self.BasePoints"""
-    def __init__(self, sd_pipe, image_encoder_path, pose_ckpt, raw_base_points, device, num_tokens=4):
+    def __init__(self, sd_pipe, image_encoder_path, pose_ckpt, raw_base_points, device, num_tokens=32):
         self.device = device
         self.image_encoder_path = image_encoder_path
         self.pose_ckpt = pose_ckpt
