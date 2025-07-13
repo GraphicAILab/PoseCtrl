@@ -454,6 +454,7 @@ def main():
         path3=args.data_root_path_3,
         # path4=args.data_root_path_4,
         # path5=args.data_root_path_5,
+        tokenizer=tokenizer
     )
 
     train_dataloader = torch.utils.data.DataLoader(

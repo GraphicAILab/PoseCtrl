@@ -656,7 +656,7 @@ class CombinedDataset(Dataset):
     - path1 使用 v1 格式。
     - path2, path3, path4, path6 使用 v4 格式。
     """
-    def __init__(self, path1=None, path2=None, path3=None, path4=None, path5=None, transform=None):
+    def __init__(self, path1=None, path2=None, path3=None, path4=None, path5=None, transform=None, tokenizer = None):
         """
         通过加载所提供路径中的数据来初始化数据集。
 
@@ -680,7 +680,7 @@ class CombinedDataset(Dataset):
             transforms.ToTensor(),
         ])
         self.samples = []
-        self.clip_image_processor = CLIPImageProcessor()
+        self.tokenizer = tokenizer  # 如果需要，可以在这里初始化一个 tokenizer
         # 加载 v1 格式的数据
         if path1:
             self._load_from_path1(path1)
