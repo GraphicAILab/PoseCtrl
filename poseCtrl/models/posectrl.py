@@ -630,7 +630,7 @@ class PoseCtrlV4:
         image_proj_model_point = VPProjModel(
             cross_attention_dim=self.pipe.unet.config.cross_attention_dim,
             clip_embeddings_dim=self.image_encoder.config.projection_dim,
-            clip_extra_context_tokens=32,
+            clip_extra_context_tokens=self.num_tokens,
         ).to(self.device, dtype=torch.float16)
         return image_proj_model_point
     

@@ -646,7 +646,7 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 from PIL import Image
-
+from transformers import CLIPImageProcessor
 # 假设 ResizeAndPad 是您自定义的转换，这里保留其引用
 # from your_transforms import ResizeAndPad 
 
@@ -680,7 +680,7 @@ class CombinedDataset(Dataset):
             transforms.ToTensor(),
         ])
         self.samples = []
-
+        self.clip_image_processor = CLIPImageProcessor()
         # 加载 v1 格式的数据
         if path1:
             self._load_from_path1(path1)
@@ -862,13 +862,20 @@ class CombinedDataset(Dataset):
         image_tensor = self.transform(image)
         p_matrix_tensor = torch.tensor(sample_data['projection_matrix'], dtype=torch.float32)
         v_matrix_tensor = torch.tensor(sample_data['view_matrix'], dtype=torch.float32)
-
+        text_input_ids = self.tokenizer(
+            sample_data['text'],
+            max_length=self.tokenizer.model_max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt"
+        ).input_ids
         final_sample = {
             'image': image_tensor,
             'projection_matrix': p_matrix_tensor,
             'view_matrix': v_matrix_tensor,
             'text': sample_data['text'],
-            'type': sample_data['type']
+            'type': sample_data['type'],
+            'text_input_ids': text_input_ids
         }
 
         # 对于 v1 类型的数据，加载并转换 'feature' 图像
