@@ -544,7 +544,7 @@ class PoseAttnProcessorV4(nn.Module):
     with no ip controller
     """
 
-    def __init__(self, hidden_size, cross_attention_dim=None, scale=1.0, num_tokens=4, num_point_tokens=32):
+    def __init__(self, hidden_size, cross_attention_dim=None, scale=1.0, num_tokens=4, num_point_tokens=8):
         super().__init__()
 
         self.hidden_size = hidden_size
