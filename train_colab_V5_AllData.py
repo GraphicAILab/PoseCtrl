@@ -505,11 +505,11 @@ def main():
                 with torch.no_grad():  
                     if batch['type'][0]=='v1':
                         base_points = vpmatrix_points_sd1(batch['view_matrix'], batch['projection_matrix'])
+                        image_tensor = processor(images=base_points, return_tensors="pt",do_rescale=False).pixel_values
+                        point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
                     elif batch['type'][0]=='v4':
-                        base_points = vpmatrix_points_sd2(batch['view_matrix'], batch['projection_matrix'])
-                    inputs = processor(images=base_points, return_tensors="pt",do_rescale=False) 
-                    image_tensor = inputs["pixel_values"]
-                    point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
+                        image_tensor = processor(images=batch['joints_image'], return_tensors="pt", do_rescale=False).pixel_values
+                        point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
 
                 if "text_input_ids" in batch:
                     with torch.no_grad():
