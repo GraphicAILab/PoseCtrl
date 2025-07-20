@@ -49,6 +49,7 @@ from PIL import Image
 import numpy as np
 from poseCtrl.models.posectrl import PoseCtrlV4_val
 from diffusers import StableDiffusionPipeline
+from poseCtrl.models.pose_controlnet import PoseControlNetModel 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Simple example of a training script.")
@@ -328,25 +329,37 @@ def custom_collate_fn(batch):
 
 
 class posectrl(nn.Module):
-    def __init__(self, unet, image_proj_model_point, atten_modules, ckpt_path=None):
+    def __init__(self, unet, unet_copy, image_proj_model_point, image_proj_model, atten_modules_p, ckpt_path=None):
         super().__init__()
         self.unet = unet
+        self.unet_copy = unet_copy
         self.image_proj_model_point = image_proj_model_point
-        self.atten_modules = atten_modules
+        self.atten_modules_p = atten_modules_p
+        self.image_proj_model = image_proj_model
 
         if ckpt_path is not None:
             self.load_from_checkpoint(ckpt_path)
 
-    def forward(self, noisy_latents, timesteps, encoder_hidden_states, point_embeds, V_matrix, P_matrix):
-        point_tokens = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
-        if encoder_hidden_states!=None:
-            if encoder_hidden_states.shape[0] != point_tokens.shape[0]:
-                encoder_hidden_states = encoder_hidden_states[:point_tokens.shape[0], :, :]
-            encoder_hidden_states = torch.cat([encoder_hidden_states, point_tokens], dim=1)
-        else:
-            encoder_hidden_states=torch.cat([point_tokens], dim=1)
-        # Predict the noise residual
-        noise_pred = self.unet(noisy_latents, timesteps, encoder_hidden_states).sample
+    def forward(self, noisy_latents, timesteps, encoder_hidden_states, V_matrix, P_matrix):
+        point_tokens = self.image_proj_model_point(V_matrix, P_matrix)
+
+        point_hidden_states = torch.cat([encoder_hidden_states, point_tokens], dim = 1)
+
+        down_block_res_samples, mid_block_res_sample = self.unet_copy(
+                    noisy_latents,
+                    timesteps,
+                    point_hidden_states,
+                    return_dict=False,
+                )
+        noise_pred = self.unet(
+                    noisy_latents,
+                    timesteps,
+                    encoder_hidden_states,
+                    down_block_additional_residuals=down_block_res_samples,
+                    mid_block_additional_residual=mid_block_res_sample,
+                    return_dict=False,
+                )[0]
+        
         return noise_pred
 
     def load_from_checkpoint(self, ckpt_path: str):
@@ -358,7 +371,8 @@ class posectrl(nn.Module):
 
         # Load state dict for image_proj_model and adapter_modules
         self.image_proj_model_point.load_state_dict(state_dict["image_proj_model_point"], strict=True)
-        self.atten_modules.load_state_dict(state_dict["atten_modules"], strict=True)
+        self.atten_modules_p.load_state_dict(state_dict["atten_modules"], strict=True)
+        self.unet_copy.load_state_dict(state_dict['unet_copy'],strict=True)
 
         # Calculate new checksums
         new_VPmatrix_sum = torch.sum(torch.stack([torch.sum(p) for p in self.image_proj_model_point.parameters()]))
@@ -393,11 +407,14 @@ def main():
     unet = UNet2DConditionModel.from_pretrained(args.pretrained_model_name_or_path, subfolder="unet")
     image_encoder = CLIPVisionModelWithProjection.from_pretrained(args.image_encoder_path)
     processor = CLIPProcessor.from_pretrained("laion/CLIP-ViT-H-14-laion2B-s32B-b79K")
+    unet_copy = PoseControlNetModel.from_unet(unet)
     # freeze parameters of models to save more memory
     unet.requires_grad_(False)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     image_encoder.requires_grad_(False)
+
+    unet_copy.requires_grad_(True)
     
     #vp-matrix encoder
     raw_base_points1=load_base_points(args.base_point_path1)  
@@ -411,18 +428,18 @@ def main():
     )
     # init pose modules
     attn_procs = {}
-    unet_sd = unet.state_dict()
-    for name in unet.attn_processors.keys():
-        cross_attention_dim = None if name.endswith("attn1.processor") else unet.config.cross_attention_dim
+    unet_sd = unet_copy.state_dict()
+    for name in unet_copy.attn_processors.keys():
+        cross_attention_dim = None if name.endswith("attn1.processor") else unet_copy.config.cross_attention_dim
 
         if name.startswith("mid_block"):
-            hidden_size = unet.config.block_out_channels[-1]
+            hidden_size = unet_copy.config.block_out_channels[-1]
         elif name.startswith("up_blocks"):
             block_id = int(name[len("up_blocks.")])
-            hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
+            hidden_size = list(reversed(unet_copy.config.block_out_channels))[block_id]
         elif name.startswith("down_blocks"):
             block_id = int(name[len("down_blocks.")])
-            hidden_size = unet.config.block_out_channels[block_id]
+            hidden_size = unet_copy.config.block_out_channels[block_id]
 
         if cross_attention_dim is None:
             attn_procs[name] = AttnProcessor()
@@ -435,11 +452,11 @@ def main():
             attn_procs[name] = PoseAttnProcessorV4(hidden_size=hidden_size, cross_attention_dim=cross_attention_dim)
             attn_procs[name].load_state_dict(weights)
 
-    unet.set_attn_processor(attn_procs)
+    unet_copy.set_attn_processor(attn_procs)
 
-    atten_modules = torch.nn.ModuleList(unet.attn_processors.values())
+    atten_modules = torch.nn.ModuleList(unet_copy.attn_processors.values())
     atten_modules.requires_grad_(True)
-    pose_ctrl = posectrl(unet, image_proj_model_point, atten_modules, args.pretrained_pose_path)
+    pose_ctrl = posectrl(unet, unet_copy, image_proj_model_point, atten_modules, args.pretrained_pose_path)
     weight_dtype = torch.float32
     if accelerator.mixed_precision == "fp16":
         weight_dtype = torch.float16
@@ -451,7 +468,7 @@ def main():
     image_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # optimizer
-    params_to_opt = itertools.chain(pose_ctrl.image_proj_model_point.parameters(),  pose_ctrl.atten_modules.parameters())
+    params_to_opt = itertools.chain(pose_ctrl.image_proj_model_point.parameters(),  pose_ctrl.atten_modules_p.parameters(), pose_ctrl.unet_copy.parameters())
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # dataloader
@@ -553,23 +570,7 @@ def main():
             if global_step % args.save_steps == 0:
                 save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                 os.makedirs(save_path, exist_ok=True)
-                # accelerator.save_state(save_path)
-                # torch.save(pose_ctrl.state_dict(), os.path.join(save_path,'model.pth'))
-                # unet.eval()
-                # pipe = StableDiffusionPipeline(
-                #     tokenizer=tokenizer,
-                #     text_encoder=text_encoder,
-                #     vae=vae,
-                #     unet=unet,
-                #     scheduler=noise_scheduler,
-                #     safety_checker=None, 
-                #     feature_extractor=None 
-                # ) 
-                # pose_model = PoseCtrlV4_val(pipe, image_encoder, raw_base_points2.to(torch.float32), torch.device("cuda"))
-
                 change_checkpoint(pose_ctrl.state_dict(), save_path)
-                # validation(pose_model, save_path, val_dataloader, torch.device("cuda"))
-                # unet.train()
 
             begin = time.perf_counter()
 
