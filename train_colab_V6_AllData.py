@@ -277,15 +277,18 @@ def change_checkpoint(checkpoint, new_checkpoint_path):
     sd = checkpoint
     image_proj_model_point_sd = {}
     atten_sd = {}
+    unet_copy_sd = {}
     for k in sd:
-        if k.startswith("unet"):
+        if k.startswith("unet_copy"):
+            unet_copy_sd[k.replace("unet_copy.", "")] = sd[k]
+        elif k.startswith("unet"):
             pass
         elif k.startswith("image_proj_model_point"):
             image_proj_model_point_sd[k.replace("image_proj_model_point.", "")] = sd[k]
         elif k.startswith("atten_modules"):
             atten_sd[k.replace("atten_modules.", "")] = sd[k]
     new_checkpoint_path = Path(new_checkpoint_path, "posectrl.bin")
-    torch.save({"image_proj_model_point": image_proj_model_point_sd, "atten_modules": atten_sd}, new_checkpoint_path)
+    torch.save({"image_proj_model_point": image_proj_model_point_sd, "atten_modules": atten_sd, "unet_copy":unet_copy_sd}, new_checkpoint_path)
 
 def custom_collate_fn(batch):
     """
@@ -334,7 +337,7 @@ class posectrl(nn.Module):
         self.unet = unet
         self.unet_copy = unet_copy
         self.image_proj_model_point = image_proj_model_point
-        self.atten_modules_p = atten_modules_p
+        self.atten_modules = atten_modules_p
 
         if ckpt_path is not None:
             self.load_from_checkpoint(ckpt_path)
@@ -370,7 +373,7 @@ class posectrl(nn.Module):
 
         # Load state dict for image_proj_model and adapter_modules
         self.image_proj_model_point.load_state_dict(state_dict["image_proj_model_point"], strict=True)
-        self.atten_modules_p.load_state_dict(state_dict["atten_modules"], strict=True)
+        self.atten_modules.load_state_dict(state_dict["atten_modules"], strict=True)
         self.unet_copy.load_state_dict(state_dict['unet_copy'],strict=True)
 
         # Calculate new checksums
@@ -467,7 +470,7 @@ def main():
     image_encoder.to(accelerator.device, dtype=weight_dtype)
 
     # optimizer
-    params_to_opt = itertools.chain(pose_ctrl.image_proj_model_point.parameters(),  pose_ctrl.atten_modules_p.parameters(), pose_ctrl.unet_copy.parameters())
+    params_to_opt = itertools.chain(pose_ctrl.image_proj_model_point.parameters(),  pose_ctrl.atten_modules.parameters(), pose_ctrl.unet_copy.parameters())
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # dataloader

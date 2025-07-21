@@ -20,6 +20,9 @@ from poseCtrl.data.dataset import CustomDataset, load_base_points
 from poseCtrl.models.pose_controlnet import PoseControlNetModel 
 from poseCtrl.models.attention_processor import PoseAttnProcessorV4, PoseAttnProcessorV2IP
 from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
+from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
+from typing import List
+
 """ The infence for posectrl V3 """
 class PoseControlNet:
     def __init__(self, sd_pipe, image_encoder_path, pose_ckpt, raw_base_points, device, num_tokens=4):
@@ -606,8 +609,8 @@ class PoseControlNetV6:
         )
         self.clip_image_processor = CLIPImageProcessor()
         # image proj model
-        self.image_proj_model = self.init_proj()
         self.vpmatrix_points_sd = self.init_point()
+        self.image_proj_model_point = self.init_VP()
         self.load_posectrl()
 
     def init_VP(self):
@@ -664,10 +667,9 @@ class PoseControlNetV6:
                         state_dict["image_proj_model_point"][key.replace("image_proj_model_point.", "")] = f.get_tensor(key)
         else:
             state_dict = torch.load(self.pose_ckpt, map_location="cpu")
-        self.image_proj_model.load_state_dict(state_dict["image_proj_model_point"])
-        # self.image_proj_model_point.load_state_dict(state_dict["image_proj_model_point"])
+        self.image_proj_model_point.load_state_dict(state_dict["image_proj_model_point"])
         self.unet_copy.load_state_dict(state_dict['unet_copy'])
-        atten_layers = torch.nn.ModuleList(self.pipe.unet.attn_processors.values())
+        atten_layers = torch.nn.ModuleList(self.unet_copy.attn_processors.values())
         atten_layers.load_state_dict(state_dict["atten_modules"])
 
     @torch.inference_mode()
