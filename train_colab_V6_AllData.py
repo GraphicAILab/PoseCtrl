@@ -418,6 +418,11 @@ def main():
 
     unet_copy.requires_grad_(True)
     
+    # for name, processor in unet_copy.attn_processors.items():
+    #     for param_name, param in processor.named_parameters():
+    #         if "to_k" in param_name or "to_v" in param_name:
+    #             param.requires_grad = False
+
     #vp-matrix encoder
     raw_base_points1=load_base_points(args.base_point_path1)  
     raw_base_points2=load_base_points(args.base_point_path2) 
