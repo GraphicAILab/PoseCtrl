@@ -267,6 +267,134 @@ class VPmatrixPointsV1(nn.Module):
             binary_mask_3ch = np.stack([binary_mask] * 3, axis=-1)  # [512, 512, 3]
             tensor_images[b] = torch.from_numpy(binary_mask_3ch).permute(2, 0, 1)
         return tensor_images.float() / 255   
+    
+def create_depth_map(screen_coords, transformed_points_ndc, image_height, image_width, 
+                     smooth=True, kernel_size=4, iterations=5):
+    """
+    最终版 V9: 使用 F.max_pool2d 的技巧实现形态学腐蚀（Min Pooling）。
+    - 确保“近大远小”，前景深度均匀分布在 [0.2, 0.8]，背景固定为 1.0。
+    - smooth=True 时，将前景点的深度值向周围传播，填充轮廓内的空洞。
+    """
+    batch_size = screen_coords.shape[0]
+    
+    # --- 步骤 1: 生成稀疏深度图 (逻辑不变) ---
+    final_depth_maps = torch.full(
+        (batch_size, image_height, image_width), 
+        1.0, 
+        device=screen_coords.device, 
+        dtype=transformed_points_ndc.dtype
+    )
+
+    z_buffer = torch.full_like(final_depth_maps, 2.0)
+
+    for b in range(batch_size):
+        coords_b = screen_coords[b]
+        ndc_depth_b = transformed_points_ndc[b, ..., 2]
+
+        valid_mask = (coords_b[..., 0] >= 0) & (coords_b[..., 0] < image_width) & \
+                     (coords_b[..., 1] >= 0) & (coords_b[..., 1] < image_height)
+        
+        if not valid_mask.any():
+            continue
+
+        valid_coords = coords_b[valid_mask].long()
+        valid_ndc_depth = ndc_depth_b[valid_mask]
+        
+        sorted_indices = torch.argsort(valid_ndc_depth, descending=True)
+        sorted_coords = valid_coords[sorted_indices]
+        sorted_ndc_depth = valid_ndc_depth[sorted_indices]
+        z_buffer[b, sorted_coords[:, 1], sorted_coords[:, 0]] = sorted_ndc_depth
+
+    for b in range(batch_size):
+        foreground_mask = z_buffer[b] < 2.0
+        
+        if not foreground_mask.any():
+            continue
+
+        foreground_depths_ndc = z_buffer[b][foreground_mask]
+        
+        ranks_asc = torch.argsort(torch.argsort(foreground_depths_ndc)).float()
+        
+        num_foreground_pixels = ranks_asc.shape[0]
+        if num_foreground_pixels > 1:
+            equalized_depths = ranks_asc / (num_foreground_pixels - 1)
+            reversed_depths = 1.0 - equalized_depths
+            scaled_depths = reversed_depths * 0.6 + 0.2
+            final_depth_maps[b][foreground_mask] = scaled_depths.to(final_depth_maps.dtype)
+        else:
+            final_depth_maps[b][foreground_mask] = torch.tensor(0.5, dtype=final_depth_maps.dtype)
+
+    # --- 步骤 2: 修正后的形态学平滑 ---
+    if smooth:
+        smoothed_map = final_depth_maps.unsqueeze(1)
+        padding = kernel_size // 2
+        
+        for _ in range(iterations):
+            # 关键修正：使用 -max_pool(-x) 来模拟 min_pool(x)
+            # 1. 对输入取反。现在前景值（原来是小的）变成大的负数。
+            # 2. 手动 pad，用一个非常小的值（-1.0，因为原背景是1.0）
+            padded_map = F.pad(-smoothed_map, (padding, padding, padding, padding), mode='constant', value=-1.0)
+            
+            # 3. 执行 max_pool。这会找到邻域内最大的负数（即原始值最小的数）。
+            max_pooled = F.max_pool2d(padded_map, kernel_size=kernel_size, stride=1)
+            
+            # 4. 再次取反，将结果恢复到原始范围。
+            smoothed_map = -max_pooled
+            
+        return smoothed_map
+    else:
+        return final_depth_maps.unsqueeze(1)
+
+class VPmatrixPointsDepth(nn.Module):
+    """ 
+    Input:  
+        V_matrix: [batch,4,4]
+        P_matrix: [batch,4,4]
+        raw_base_points: [13860,4]
+    Output:
+        depth_map: [batch, 1, H, W]
+    """
+    def __init__(self, raw_base_points, image_width=512, image_height=512):
+        super().__init__() 
+        self.register_buffer("raw_base_points", raw_base_points)
+        self.image_width = image_width
+        self.image_height = image_height
+
+    def forward(self, V_matrix, P_matrix):
+        VP_matrix = torch.bmm(P_matrix, V_matrix)  # [batch, 4, 4]
+        points = self.raw_base_points.unsqueeze(0).expand(VP_matrix.shape[0], -1, -1).to(V_matrix.device)
+        
+        # 变换到裁剪空间
+        transformed_points_homogeneous = torch.bmm(points, VP_matrix.transpose(1, 2))  # [batch, 13860, 4]
+        
+        # 透视除法，得到 NDC 坐标 [-1, 1]
+        w = transformed_points_homogeneous[..., 3:4]
+        transformed_points_ndc = torch.where(
+            w != 0,
+            transformed_points_homogeneous[..., :3] / w,
+            transformed_points_homogeneous[..., :3]
+        ) # [batch, 13860, 3]
+
+        # --- 从这里开始修改 ---
+        
+        # 1. 计算屏幕坐标
+        screen_coords = transformed_points_ndc.clone()
+        screen_coords[..., 0] = (screen_coords[..., 0] + 1) * 0.5 * self.image_width
+        screen_coords[..., 1] = (1 - (screen_coords[..., 1] + 1) * 0.5) * self.image_height
+        screen_coords = screen_coords.round().long()
+
+        # 2. 调用新函数生成深度图
+        # 我们需要传入 screen_coords (用于位置) 和 transformed_points_ndc (用于深度)
+        depth_map = create_depth_map(
+            screen_coords, 
+            transformed_points_ndc, 
+            self.image_height, 
+            self.image_width
+        )
+        
+        return depth_map
+
+
 
 # --------------------- Dataset & Testing ---------------------
 
