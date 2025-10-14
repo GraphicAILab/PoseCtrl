@@ -701,3 +701,308 @@ class CombinedDataset(Dataset):
         return final_sample
 
 
+class CombinedDatasetTest(Dataset):
+    def __init__(self, path1=None, path2=None, path3=None, path4=None, path5=None, transform=None, tokenizer=None):
+        self.transform = transform or transforms.Compose([
+            ResizeAndPad(512, fill_color=(255, 255, 255)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        ])
+        self.transform_feature = transforms.Compose([
+            transforms.Resize((512, 512)),
+            transforms.ToTensor(),
+        ])
+        self.samples = []
+        self.tokenizer = tokenizer
+        self.joints2d_map = {}
+
+        if path1:
+            self._load_from_path1(path1)
+
+        v4_style_paths = {"path2": path2, "path3": path3, "path4": path4, "path5": path5}
+        for path_name, root_path in v4_style_paths.items():
+            if root_path:
+                self._load_v4_style_data(root_path, path_name)
+
+    # ---------- 工具：解析 image_smpl.txt（块格式） ----------
+    def _load_name_to_21x3_map(self, txt_path):
+        """
+        读取块格式txt，返回 dict: name(str) -> np.ndarray(21,3)
+        块格式：
+            NameA
+            a11 a12 a13
+            ...
+            a21 a22 a23
+
+            NameB
+            ...
+        """
+        name2arr = {}
+        if not os.path.exists(txt_path):
+            print(f"[param_txt] {txt_path} not found, will set param_21x3=None for unmatched.")
+            return name2arr
+
+        with open(txt_path, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+
+        blocks = re.split(r"\n\s*\n", content)
+        for bi, block in enumerate(blocks, 1):
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+            if not lines:
+                continue
+            name = lines[0]
+            rows = []
+            for ln in lines[1:]:
+                parts = ln.split()
+                if len(parts) != 3:
+                    continue
+                try:
+                    rows.append([float(parts[0]), float(parts[1]), float(parts[2])])
+                except ValueError:
+                    continue
+            if len(rows) != 21:
+                print(f"[param_txt][warn] block {bi} name={name}: got {len(rows)} rows (need 21). Skipped.")
+                continue
+            name2arr[name] = np.array(rows, dtype=np.float32)
+        print(f"[param_txt] loaded {len(name2arr)} entries from {txt_path}")
+        return name2arr
+
+    def _read_matrices_from_file(self, file_path):
+        with open(file_path, 'r') as file:
+            lines = file.readlines()
+            matrices, matrix = [], []
+            for line in lines:
+                if 'Capture' not in line:
+                    try:
+                        row = list(map(float, line.strip().split()))
+                        if len(row) == 4:
+                            matrix.append(row)
+                            if len(matrix) == 4:
+                                matrices.append(np.array(matrix))
+                                matrix = []
+                    except ValueError:
+                        continue
+            return matrices
+
+    def _load_from_path1(self, root_dir):
+        print(f"Loading data from path1: {root_dir}")
+        for folder_name in os.listdir(root_dir):
+            folder_path = os.path.join(root_dir, folder_name)
+            if os.path.isdir(folder_path):
+                data_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.endswith('.txt')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+                image_files = sorted(
+                    [f for f in os.listdir(folder_path) if f.lower().endswith(('.png', '.jpg')) and f.lower().startswith('capture')],
+                    key=lambda x: int(re.findall(r'\d+', x)[0]) if re.findall(r'\d+', x) else float('inf')
+                )
+                feature_file = os.path.join(folder_path, "feature.png")
+                if not os.path.exists(feature_file):
+                    print(f"Warning: 'feature.png' not found in {folder_path}. Skipping folder.")
+                    continue
+                projection_matrix_file = None
+                view_matrix_file = None
+                for data_file in data_files:
+                    if 'projectionMatrix' in data_file:
+                        projection_matrix_file = os.path.join(folder_path, data_file)
+                    elif 'viewMatrix' in data_file:
+                        view_matrix_file = os.path.join(folder_path, data_file)
+                if projection_matrix_file and view_matrix_file and image_files:
+                    projection_matrices = self._read_matrices_from_file(projection_matrix_file)
+                    view_matrices = self._read_matrices_from_file(view_matrix_file)
+                    if len(projection_matrices) == len(view_matrices) == len(image_files):
+                        for proj, view, img_name in zip(projection_matrices, view_matrices, image_files):
+                            self.samples.append({
+                                'type': 'v1',
+                                'image_path': os.path.join(folder_path, img_name),
+                                'projection_matrix': proj,
+                                'view_matrix': view,
+                                'feature_path': feature_file,
+                                'text': "highly detailed, anime"
+                            })
+
+    def _load_v4_style_data(self, root_dir, path_name):
+        print(f"Loading data from {path_name}: {root_dir}")
+
+        # 新增：在 v4 根目录查找 image_smpl.txt 并解析为映射
+        param_map_path = os.path.join(root_dir, "image_smpl.txt")
+        param_map = self._load_name_to_21x3_map(param_map_path)
+
+        camera_params_file = os.path.join(root_dir, 'camera_params.txt')
+        image_features_file = os.path.join(root_dir, 'image_features.txt')
+        joints_file = os.path.join(root_dir, 'merged_joints2d.txt')
+
+        try:
+            with open(image_features_file, 'r', encoding='utf-8') as f:
+                image_features = json.load(f)
+        except Exception as e:
+            print(f"Warning: failed to load {image_features_file} - {e}")
+            image_features = {}
+
+        try:
+            with open(camera_params_file, 'r') as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            print(f"Error: {camera_params_file} not found. Skipping.")
+            return
+
+        # Load joints2d
+        if os.path.exists(joints_file):
+            current_image = None
+            with open(joints_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('#'):
+                        current_image = line.replace('#', '').strip()
+                        self.joints2d_map[current_image] = []
+                    else:
+                        coords = list(map(float, line.split(',')))
+                        self.joints2d_map[current_image].append(coords)
+
+        current_image_path = None
+        current_p_matrix, current_v_matrix = [], []
+        parsing_mode = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            if any(ext in line for ext in ['.jpg', '.png', '.webp']):
+                if current_image_path and len(current_p_matrix) == 4 and len(current_v_matrix) == 4:
+                    self._add_v4_sample(root_dir, current_image_path, current_p_matrix, current_v_matrix, image_features, param_map)
+                current_image_path = line.replace(':', '')
+                current_p_matrix, current_v_matrix, parsing_mode = [], [], None
+            elif line == 'P:':
+                parsing_mode = 'P'
+            elif line == 'V:':
+                parsing_mode = 'V'
+            else:
+                try:
+                    row_data = list(map(float, re.findall(r'-?\d+\.\d+(?:e-?\d+)?', line)))
+                    if len(row_data) == 4:
+                        if parsing_mode == 'P' and len(current_p_matrix) < 4:
+                            current_p_matrix.append(row_data)
+                        elif parsing_mode == 'V' and len(current_v_matrix) < 4:
+                            current_v_matrix.append(row_data)
+                except ValueError:
+                    continue
+
+        if current_image_path and len(current_p_matrix) == 4 and len(current_v_matrix) == 4:
+            self._add_v4_sample(root_dir, current_image_path, current_p_matrix, current_v_matrix, image_features, param_map)
+
+    def _add_v4_sample(self, root_dir, image_path, p_matrix, v_matrix, image_features, param_map):
+        image_filename = os.path.basename(image_path)
+        image_stem, _ = os.path.splitext(image_filename)
+        full_image_path = os.path.join(root_dir, image_filename)
+        text_prompt = ", ".join(image_features.get(image_filename, []))
+
+        if os.path.exists(full_image_path):
+            # 在本 root_dir 对应的 param_map 中匹配 21x3
+            param_arr = None
+            if image_stem in param_map:
+                param_arr = param_map[image_stem]
+            elif image_filename in param_map:  # 兜底：用完整文件名试一下
+                param_arr = param_map[image_filename]
+
+            self.samples.append({
+                'type': 'v4',
+                'image_path': full_image_path,
+                'projection_matrix': np.array(p_matrix, dtype=np.float32),
+                'view_matrix': np.array(v_matrix, dtype=np.float32),
+                'text': text_prompt,
+                'param_21x3_np': param_arr  # 找不到则为 None
+            })
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        sample_data = self.samples[idx]
+
+        try:
+            image = Image.open(sample_data['image_path']).convert('RGB')
+        except IOError as e:
+            raise IOError(f"Error opening image file '{sample_data['image_path']}': {e}")
+
+        image_tensor = self.transform(image)
+        p_matrix_tensor = torch.tensor(sample_data['projection_matrix'], dtype=torch.float32)
+        v_matrix_tensor = torch.tensor(sample_data['view_matrix'], dtype=torch.float32)
+        text_input_ids = self.tokenizer(
+            sample_data['text'],
+            max_length=self.tokenizer.model_max_length,
+            padding="max_length",
+            truncation=True,
+            return_tensors="pt"
+        ).input_ids
+
+        final_sample = {
+            'image': image_tensor,
+            'projection_matrix': p_matrix_tensor,
+            'view_matrix': v_matrix_tensor,
+            'text': sample_data['text'],
+            'type': sample_data['type'],
+            'text_input_ids': text_input_ids,
+            'image_path': sample_data['image_path']
+        }
+
+        if sample_data['type'] == 'v1':
+            try:
+                feature_image = Image.open(sample_data['feature_path']).convert('RGB')
+                final_sample['feature'] = self.transform_feature(feature_image)
+            except IOError as e:
+                raise IOError(f"Error opening feature file '{sample_data['feature_path']}': {e}")
+
+        if sample_data['type'] == 'v4':
+            image_name = os.path.basename(sample_data['image_path'])
+            # joints 可视化（保留原逻辑）
+            if image_name in self.joints2d_map:
+                joints = self.joints2d_map[image_name]
+                joints_img = np.ones((512, 512, 3), dtype=np.uint8) * 255
+
+                connections = [
+                    (0, 1), (0, 2),
+                    (1, 3), (2, 4),
+                    (5, 6),
+                    (5, 7), (7, 9),
+                    (6, 8), (8,10),
+                    (11,12),
+                    (11,13), (13,15),
+                    (12,14), (14,16),
+                ]
+                left_indices = {1,3,5,7,9,11,13,15}
+                right_indices = {2,4,6,8,10,12,14,16}
+
+                for jidx, pt in enumerate(joints):
+                    if len(pt) >= 2:
+                        x, y = int(pt[0]), int(pt[1])
+                        if 0 <= x < 512 and 0 <= y < 512:
+                            cv2.circle(joints_img, (x, y), 4, (0, 0, 255), -1)
+
+                for i1, i2 in connections:
+                    if i1 < len(joints) and i2 < len(joints):
+                        x1, y1 = map(int, joints[i1][:2])
+                        x2, y2 = map(int, joints[i2][:2])
+                        if all(0 <= v < 512 for v in [x1, y1, x2, y2]):
+                            if i1 in left_indices or i2 in left_indices:
+                                color = (0, 0, 255)
+                            elif i1 in right_indices or i2 in right_indices:
+                                color = (255, 0, 0)
+                            else:
+                                color = (0, 0, 0)
+                            cv2.line(joints_img, (x1, y1), (x2, y2), color, 2)
+
+                joints_img = Image.fromarray(joints_img)
+                final_sample['joints_image'] = transforms.ToTensor()(joints_img)
+
+            # 21x3 参数（可能 None）
+            param_np = sample_data.get('param_21x3_np', None)
+            final_sample['param_smpl'] = torch.from_numpy(param_np).float() if param_np is not None else None
+
+        return final_sample
