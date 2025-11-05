@@ -394,7 +394,95 @@ class VPmatrixPointsDepth(nn.Module):
         
         return depth_map
 
+import torch
+import torch.nn as nn
+from torch.autograd import Variable
+from torch.nn import functional as F
+import numpy as np
+class STNkd(nn.Module):
+    def __init__(self, k=64):
+        super(STNkd, self).__init__()
+        self.conv1 = torch.nn.Conv1d(k, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1)
+        self.conv3 = torch.nn.Conv1d(128, 1024, 1)
+        self.fc1 = nn.Linear(1024, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, k * k)
+        self.relu = nn.ReLU()
 
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+        self.bn4 = nn.BatchNorm1d(512)
+        self.bn5 = nn.BatchNorm1d(256)
+
+        self.k = k
+
+    def forward(self, x):
+        batchsize = x.size()[0]
+        x = F.relu(self.bn1(self.conv1(x)))
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = torch.max(x, 2, keepdim=True)[0]
+        x = x.view(-1, 1024)
+        x = F.relu(self.bn4(self.fc1(x)))
+        x = F.relu(self.bn5(self.fc2(x)))
+        x = self.fc3(x)
+
+        iden = Variable(torch.from_numpy(np.eye(self.k).flatten().astype(np.float32))).view(1, self.k * self.k).repeat(
+            batchsize, 1)
+        if x.is_cuda:
+            iden = iden.cuda()
+        x = x + iden
+        x = x.view(-1, self.k, self.k)
+        return x
+    
+class PointNetEncoder(nn.Module):
+    def __init__(self, channel=3):
+        super(PointNetEncoder, self).__init__()
+        self.conv1 = torch.nn.Conv1d(channel, 64, 1)
+        self.conv2 = torch.nn.Conv1d(64, 128, 1)
+        self.conv3 = torch.nn.Conv1d(128, 1024, 1)
+        self.bn1 = nn.BatchNorm1d(64)
+        self.bn2 = nn.BatchNorm1d(128)
+        self.bn3 = nn.BatchNorm1d(1024)
+        self.fstn = STNkd(k=64)
+
+        self.feature_proj = nn.Linear(10475, 768)
+        self.seq_proj = nn.Linear(1024, 77)
+        self.norm = nn.LayerNorm(768)
+        self.act = nn.GELU()
+
+    def forward(self, x, V_matrix, P_matrix):
+        B, D, N = x.size()
+        trans = torch.bmm(P_matrix, V_matrix) 
+        new_dim = torch.ones(B, D, 1, device=x.device)
+        x = torch.cat([x, new_dim], dim=2)
+        x = torch.bmm(x, trans.transpose(1, 2))
+        x[..., :3] = torch.where(
+            x[..., 3:4] != 0,
+            x[..., :3] / x[..., 3:4],
+            x[..., :3]
+        )  # [batch, 13860, 3]
+        x = x[..., :3]
+        x = x.transpose(2, 1)
+        x = F.relu(self.bn1(self.conv1(x)))
+        trans_feat = self.fstn(x)
+        x = x.transpose(2, 1)
+        x = torch.bmm(x, trans_feat)
+        x = x.transpose(2, 1)
+        pointfeat = x
+
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = self.bn3(self.conv3(x))
+        x = self.feature_proj(x)      # [b, 1024, 768]
+        x = self.norm(x)
+        x = self.act(x)
+        x = x.transpose(1, 2)         # [b, 768, 1024]
+        x = self.seq_proj(x)          # [b, 768, 77]
+        x = x.transpose(1, 2)
+        return x, trans_feat
+    
 
 # --------------------- Dataset & Testing ---------------------
 

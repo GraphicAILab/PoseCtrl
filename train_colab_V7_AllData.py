@@ -6,11 +6,9 @@ input: image [3,512,512]
 basemodel: base smplx model
 
 dataloader: 
-        CustomDataset_v4(new):
-vp-matrix encoder:
-        VPmatrixPointsV7
+        CombinedDatasetTest(new):
 point(base_model) encoder:
-        VPProjModel_separate(separate)
+        PointNetEncoder
 PoseAttnProcessor:
         PoseAttnProcessorV4
 inference:
@@ -41,9 +39,9 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 current_dir = os.path.join(current_dir, "PoseCtrl")
 sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir,"poseCtrl"))
-from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel
+from poseCtrl.models.pose_adaptor import VPmatrixPoints, ImageProjModel, VPmatrixPointsV1, VPProjModel, PointNetEncoder
 from poseCtrl.models.attention_processor import AttnProcessor, PoseAttnProcessorV4
-from poseCtrl.data.dataset import CustomDataset_v4, load_base_points, CombinedDataset
+from poseCtrl.data.dataset import CustomDataset_v4, load_base_points, CombinedDataset, CombinedDatasetTest
 from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionInpaintPipelineLegacy, DDIMScheduler, AutoencoderKL
 from PIL import Image
 import numpy as np
@@ -119,6 +117,19 @@ def parse_args():
         default="/content/drive/MyDrive/images_01/image_test",
         # required=True,
         help="Training data root path",
+    )
+    parser.add_argument(
+        "--txt_subdir_name",
+        type=str,
+        default="/content/drive/MyDrive/images_01/smpl",
+        # required=True,
+        help="Training data root path",
+    )
+    parser.add_argument(
+        "--lr_ft",
+        type=float,
+        default=1e-4,
+        help="Learning rate for feature transformation regularizer.",
     )
     parser.add_argument(
         "--image_encoder_path",
@@ -332,18 +343,18 @@ def custom_collate_fn(batch):
 
 
 class posectrl(nn.Module):
-    def __init__(self, unet, unet_copy, image_proj_model_point, atten_modules_p, ckpt_path=None):
+    def __init__(self, unet, unet_copy, pointnet_encoder, atten_modules_p, ckpt_path=None):
         super().__init__()
         self.unet = unet
         self.unet_copy = unet_copy
-        self.image_proj_model_point = image_proj_model_point
+        self.image_proj_model_point = pointnet_encoder
         self.atten_modules = atten_modules_p
 
         if ckpt_path is not None:
             self.load_from_checkpoint(ckpt_path)
 
     def forward(self, noisy_latents, timesteps, encoder_hidden_states, point_embeds, V_matrix, P_matrix):
-        point_tokens = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
+        point_tokens, trans_feat = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
 
         point_hidden_states = torch.cat([encoder_hidden_states, point_tokens], dim = 1)
 
@@ -362,7 +373,7 @@ class posectrl(nn.Module):
                     return_dict=False,
                 )[0]
         
-        return noise_pred
+        return noise_pred, trans_feat
 
     def load_from_checkpoint(self, ckpt_path: str):
         # Calculate original checksums
@@ -384,6 +395,14 @@ class posectrl(nn.Module):
         assert orig_VPmatrix_sum != new_VPmatrix_sum, "Weights of VPmatrixEncoder did not change!"
         assert orig_atten_sum != new_atten_sum, "Weights of atten_modules did not change!"
         print(f"Successfully loaded weights from checkpoint {ckpt_path}")
+
+def feature_transform_reguliarzer(trans):
+    d = trans.size()[1]
+    I = torch.eye(d)[None, :, :]
+    if trans.is_cuda:
+        I = I.cuda()
+    loss = torch.mean(torch.norm(torch.bmm(trans, trans.transpose(2, 1)) - I, dim=(1, 2)))
+    return loss
 
 def main():
     args = parse_args()
@@ -422,17 +441,11 @@ def main():
     #     for param_name, param in processor.named_parameters():
     #         if "to_k" in param_name or "to_v" in param_name:
     #             param.requires_grad = False
-
-    #vp-matrix encoder
-    raw_base_points1=load_base_points(args.base_point_path1)  
-    raw_base_points2=load_base_points(args.base_point_path2) 
+    
+    raw_base_points1=load_base_points(args.base_point_path1) 
     vpmatrix_points_sd1 = VPmatrixPointsV1(raw_base_points1)
-    vpmatrix_points_sd2 = VPmatrixPointsV1(raw_base_points2)
-    image_proj_model_point = VPProjModel(
-        cross_attention_dim=unet.config.cross_attention_dim,
-        clip_embeddings_dim=image_encoder.config.projection_dim,
-        clip_extra_context_tokens=8,
-    )
+    pointnet_encoder = PointNetEncoder(channel=3).to("cuda")
+
     # init pose modules
     attn_procs = {}
     unet_sd = unet_copy.state_dict()
@@ -463,7 +476,7 @@ def main():
 
     atten_modules = torch.nn.ModuleList(unet_copy.attn_processors.values())
     atten_modules.requires_grad_(True)
-    pose_ctrl = posectrl(unet, unet_copy, image_proj_model_point, atten_modules, args.pretrained_pose_path)
+    pose_ctrl = posectrl(unet, unet_copy, pointnet_encoder, atten_modules, args.pretrained_pose_path)
     weight_dtype = torch.float32
     if accelerator.mixed_precision == "fp16":
         weight_dtype = torch.float16
@@ -480,13 +493,14 @@ def main():
     
     # dataloader
     # train_dataset = CustomDataset_v4(args.data_root_path, camera_params_file=args.CAMERA_PARAMS_FILE, image_features_file=args.IMAGE_FEATURES_FILE)
-    train_dataset = CombinedDataset(
+    train_dataset = CombinedDatasetTest(
         # path1=args.data_root_path_1,
         path2=args.data_root_path_2,
         path3=args.data_root_path_3,
         # path4=args.data_root_path_4,
         # path5=args.data_root_path_5,
-        tokenizer=tokenizer
+        tokenizer=tokenizer,
+        txt_subdir_name=args.txt_subdir_name
     )
 
     train_dataloader = torch.utils.data.DataLoader(
@@ -540,8 +554,9 @@ def main():
                         image_tensor = processor(images=base_points, return_tensors="pt",do_rescale=False).pixel_values
                         point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
                     elif batch['type'][0]=='v4':
-                        image_tensor = processor(images=batch['joints_image'], return_tensors="pt", do_rescale=False).pixel_values
-                        point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
+                        # image_tensor = processor(images=batch['joints_image'], return_tensors="pt", do_rescale=False).pixel_values
+                        # point_embeds = image_encoder(image_tensor.to(accelerator.device, dtype=weight_dtype)).image_embeds
+                        point_embeds = batch['points'].to(accelerator.device, dtype=weight_dtype)
 
                 if "text_input_ids" in batch:
                     with torch.no_grad():
@@ -557,9 +572,10 @@ def main():
                     encoder_hidden_states = text_encoder(text_input_ids.to(accelerator.device))[0]
                     encoder_hidden_states = encoder_hidden_states.repeat(args.train_batch_size, 1, 1) 
                 
-                noise_pred = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, point_embeds, batch['view_matrix'], batch['projection_matrix'])
+                noise_pred, trans_feat = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, point_embeds, batch['view_matrix'], batch['projection_matrix'])
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
-            
+                ft_loss = feature_transform_reguliarzer(trans_feat)
+                loss = loss + args.lr_ft * ft_loss
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean().item()
                 
