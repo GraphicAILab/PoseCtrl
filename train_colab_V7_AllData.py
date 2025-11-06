@@ -14,7 +14,35 @@ PoseAttnProcessor:
 inference:
         PoseControlNetV7
         colabV4
-        
+"""
+
+""" 
+DATASET STRUCTURE:
+
+processor = CLIPImageProcessor()
+tokenizer = CLIPTokenizer.from_pretrained(r'F:\Projects\diffusers\ProgramData\basemodel', subfolder="tokenizer")
+data_root_path_2 = r"F:\Projects\diffusers\ProgramData\test"
+txt_subdir_name = r'F:\Projects\diffusers\ProgramData\new_data\image\smpl'
+train_dataset = CombinedDatasetTest(
+    path2=data_root_path_2,
+    tokenizer=tokenizer,
+    txt_subdir_name=txt_subdir_name
+)
+
+训练过程每一个类别的图片需要有五类文件：
+1. 原图：从压缩包解压
+2. merged_joints2d.txt: copy进去, 每个类别的joints不一样，注意区分
+3. image_features.txt: copy进去， 每个类别的feature是一样的
+4. image_smpl.txt: copy进去， 每个类别的smpl关节是不一样的，注意区分，目前只有normal视角的，没有mirror的
+5. txt_subdir_name: 传进CombinedDatasetTest，每个类别也不一样，现在只有normal的，目前的dataset也只支持读入normal，没有mirror的
+
+EXAMPLE:
+!unzip images/image_resized.zip
+!cp images/merged_joints2d.txt image_resized/merged_joints2d.txt
+!cp images/filtered_camera_params.txt image_resized/camera_params.txt
+!cp images/image_features.txt image_resized/image_features.txt
+!cp images/image_smpl_normal.txt image_resized/image_smpl.txt
+
 
 """
 import os
