@@ -160,6 +160,12 @@ def parse_args():
         help="Learning rate for feature transformation regularizer.",
     )
     parser.add_argument(
+        "--lr_balance",
+        type=float,
+        default=1e-4,
+        help="Learning rate for balance regularizer.",
+    )
+    parser.add_argument(
         "--image_encoder_path",
         type=str,
         default="laion/CLIP-ViT-H-14-laion2B-s32B-b79K",
@@ -382,7 +388,7 @@ class posectrl(nn.Module):
             self.load_from_checkpoint(ckpt_path)
 
     def forward(self, noisy_latents, timesteps, encoder_hidden_states, point_embeds, V_matrix, P_matrix):
-        point_tokens, trans_feat = self.image_proj_model_point(point_embeds, V_matrix, P_matrix)
+        point_tokens, trans_feat, importance = self.image_proj_model_point(point_embeds, V_matrix, P_matrix, encoder_hidden_states)
 
         point_hidden_states = torch.cat([encoder_hidden_states, point_tokens], dim = 1)
 
@@ -401,7 +407,7 @@ class posectrl(nn.Module):
                     return_dict=False,
                 )[0]
         
-        return noise_pred, trans_feat
+        return noise_pred, trans_feat, importance
 
     def load_from_checkpoint(self, ckpt_path: str):
         # Calculate original checksums
@@ -600,10 +606,11 @@ def main():
                     encoder_hidden_states = text_encoder(text_input_ids.to(accelerator.device))[0]
                     encoder_hidden_states = encoder_hidden_states.repeat(args.train_batch_size, 1, 1) 
                 
-                noise_pred, trans_feat = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, point_embeds, batch['view_matrix'], batch['projection_matrix'])
+                noise_pred, trans_feat, importance = pose_ctrl(noisy_latents, timesteps, encoder_hidden_states, point_embeds, batch['view_matrix'], batch['projection_matrix'])
                 loss = F.mse_loss(noise_pred.float(), noise.float(), reduction="mean")
                 ft_loss = feature_transform_reguliarzer(trans_feat)
-                loss = loss + args.lr_ft * ft_loss
+                balance_loss = torch.std(importance)
+                loss = loss + args.lr_ft * ft_loss + args.lr_balance * balance_loss
                 # Gather the losses across all processes for logging (if we use distributed training).
                 avg_loss = accelerator.gather(loss.repeat(args.train_batch_size)).mean().item()
                 

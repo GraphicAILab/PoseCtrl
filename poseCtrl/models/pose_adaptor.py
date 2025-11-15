@@ -399,6 +399,73 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn import functional as F
 import numpy as np
+class MoEEncoder(nn.Module):
+    def __init__(self,
+                 input_dim,
+                 hidden_dim,
+                 output_dim,
+                 num_experts,
+                 top_k):
+        super().__init__()
+        self.num_experts = num_experts
+        self.top_k = top_k
+
+        # 门控
+        self.gate = nn.Linear(input_dim, num_experts)
+
+        # 专家网络
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, output_dim)
+            ) for _ in range(num_experts)
+        ])
+
+    def forward(self, x, point_embeds):
+        """
+        x: [B, T, D]  ->  out: [B, T, D]: text
+        point_embeds: point features
+        同时返回负载均衡统计量
+        """
+        B, T, D = x.shape
+        flat = x.reshape(B * T, D)                      # [B*T, D]
+
+        gate_logits = self.gate(flat)                   # [B*T, num_experts]
+
+        gate_probs = F.softmax(gate_logits, dim=-1)     # [B*T, num_experts]
+        top_val, top_idx = torch.topk(gate_probs, self.top_k, dim=-1)  # [B*T, top_k]
+
+        importance = torch.zeros(self.num_experts, device=x.device)
+        importance.index_add_(0, top_idx.view(-1), top_val.view(-1))
+
+        out = torch.zeros_like(flat)
+
+        D = flat.size(-1)
+        expert_1_accumulated_output = torch.zeros_like(flat)
+        expert_2_accumulated_output = torch.zeros_like(flat)
+
+        pointfeature = point_embeds
+
+        for i in range(B * T):
+            input_i = flat[i] # 当前的输入向量 [D]
+
+            for k in range(self.top_k):
+                expert_id = top_idx[i, k].item()
+                weight = top_val[i, k]
+                expert_output = self.experts[expert_id](input_i) # [D]
+                out[i] += weight * expert_output
+                if expert_id == 0:
+                    expert_1_accumulated_output[i] += weight * expert_output
+                elif expert_id == 1:
+                    expert_2_accumulated_output[i] += weight * expert_output
+
+        final_point = expert_1_accumulated_output.view(B, T, -1) + pointfeature
+        final_out=torch.cat([final_point, expert_2_accumulated_output.view(B, T, -1)], dim=2)
+
+
+        return importance, final_out
+
 class STNkd(nn.Module):
     def __init__(self, k=64):
         super(STNkd, self).__init__()
@@ -452,8 +519,9 @@ class PointNetEncoder(nn.Module):
         self.seq_proj = nn.Linear(1024, 77)
         self.norm = nn.LayerNorm(768)
         self.act = nn.GELU()
+        self.moe=MoEEncoder(input_dim=768, hidden_dim=512, output_dim=768, num_experts=2, top_k=2)
 
-    def forward(self, x, V_matrix, P_matrix):
+    def forward(self, x, V_matrix, P_matrix, text_feature):
         B, D, N = x.size()
         trans = torch.bmm(P_matrix, V_matrix) 
         new_dim = torch.ones(B, D, 1, device=x.device)
@@ -481,7 +549,10 @@ class PointNetEncoder(nn.Module):
         x = x.transpose(1, 2)         # [b, 768, 1024]
         x = self.seq_proj(x)          # [b, 768, 77]
         x = x.transpose(1, 2)
-        return x, trans_feat
+
+        importance, x = self.moe(text_feature, x) 
+
+        return x, trans_feat, importance
     
 
 # --------------------- Dataset & Testing ---------------------
