@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument(
         "--pretrained_model_name_or_path",
         type=str, 
-        default='/content/drive/MyDrive/basemodel',
+        default='F:\\Projects\\diffusers\\ProgramData\\basemodel',
         # required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
@@ -95,26 +95,26 @@ def parse_args():
     parser.add_argument(
         "--base_point_path1",
         type=str,
-        default=r'/content/drive/MyDrive/PoseCtrl/dataSet/standardVertex_1.txt',
+        default=r'F:\Projects\diffusers\Project\PoseCtrl\dataSet\standardVertex.txt',
         help='Path to base model points'
     )
     parser.add_argument(
         "--base_point_path2",
         type=str,
-        default=r'/content/drive/MyDrive/PoseCtrl/dataSet/standardVertex_2.txt',
+        default=r'F:\Projects\diffusers\Project\PoseCtrl\dataSet\standardVertex.txt',
         help='Path to base model points'
     )
     parser.add_argument(
         "--data_root_path_1",
         type=str,
-        default="/content/pic",
+        default="F:\\Projects\\diffusers\\ProgramData\\test",
         # required=True,
         help="Training data root path",
     )
     parser.add_argument(
         "--data_root_path_2",
         type=str,
-        default="/content/image_resized",
+        default="F:\\Projects\\diffusers\\ProgramData\\test",
         # required=True,
         help="Training data root path",
     )
@@ -149,7 +149,7 @@ def parse_args():
     parser.add_argument(
         "--txt_subdir_name",
         type=str,
-        default="/content/drive/MyDrive/images_01/smpl",
+        default="F:\\Projects\\diffusers\\ProgramData\\new_data\\image\\smpl",
         # required=True,
         help="Training data root path",
     )
@@ -175,7 +175,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="sd-pose_ctrl",
+        default="sd-pose_ctrl-test",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -204,7 +204,10 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=1e-2, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
-        "--train_batch_size", type=int, default=4, help="Batch size (per device) for the training dataloader."
+        "--train_batch_size", 
+        type=int, 
+        default=1, 
+        help="Batch size (per device) for the training dataloader."
     )
     parser.add_argument(
         "--dataloader_num_workers",
@@ -217,7 +220,7 @@ def parse_args():
     parser.add_argument(
         "--save_steps",
         type=int,
-        default=2000,
+        default=2,
         help=(
             "Save a checkpoint of the training state every X updates"
         ),
@@ -611,7 +614,7 @@ def main():
     train_dataset = CombinedDatasetTest(
         # path1=args.data_root_path_1,
         path2=args.data_root_path_2,
-        path3=args.data_root_path_3,
+        # path3=args.data_root_path_3,
         # path4=args.data_root_path_4,
         # path5=args.data_root_path_5,
         tokenizer=tokenizer,

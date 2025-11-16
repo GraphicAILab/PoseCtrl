@@ -520,6 +520,7 @@ class PointNetEncoder(nn.Module):
         self.norm = nn.LayerNorm(768)
         self.act = nn.GELU()
         self.moe=MoEEncoder(input_dim=768, hidden_dim=512, output_dim=768, num_experts=2, top_k=2)
+        self.out=nn.Linear(768*2, 768)
 
     def forward(self, x, V_matrix, P_matrix, text_feature):
         B, D, N = x.size()
@@ -551,9 +552,9 @@ class PointNetEncoder(nn.Module):
         x = x.transpose(1, 2)
 
         importance, x = self.moe(text_feature, x) 
-
-        return x, trans_feat, importance
     
+        x = self.out(x)
+        return x, trans_feat, importance
 
 # --------------------- Dataset & Testing ---------------------
 
