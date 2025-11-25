@@ -436,7 +436,7 @@ class MoEEncoder(nn.Module):
         gate_probs = F.softmax(gate_logits, dim=-1)     # [B*T, num_experts]
         top_val, top_idx = torch.topk(gate_probs, self.top_k, dim=-1)  # [B*T, top_k]
 
-        importance = torch.zeros(self.num_experts, device=x.device)
+        importance = torch.zeros(self.num_experts, device=x.device, dtype=top_val.dtype)
         importance.index_add_(0, top_idx.view(-1), top_val.view(-1))
 
         out = torch.zeros_like(flat)
@@ -525,7 +525,7 @@ class PointNetEncoder(nn.Module):
     def forward(self, x, V_matrix, P_matrix, text_feature):
         B, D, N = x.size()
         trans = torch.bmm(P_matrix, V_matrix) 
-        new_dim = torch.ones(B, D, 1, device=x.device)
+        new_dim = torch.ones(B, D, 1, device=x.device, dtype=x.dtype)
         x = torch.cat([x, new_dim], dim=2)
         x = torch.bmm(x, trans.transpose(1, 2))
         x[..., :3] = torch.where(
@@ -536,7 +536,7 @@ class PointNetEncoder(nn.Module):
         x = x[..., :3]
         x = x.transpose(2, 1)
         x = F.relu(self.bn1(self.conv1(x)))
-        trans_feat = self.fstn(x)
+        trans_feat = self.fstn(x).to(x.dtype)
         x = x.transpose(2, 1)
         x = torch.bmm(x, trans_feat)
         x = x.transpose(2, 1)

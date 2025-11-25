@@ -845,6 +845,7 @@ class PoseControlNetV7:
         )
         self.clip_image_processor = CLIPImageProcessor()
         self.image_proj_model_point = PointNetEncoder(channel=3).to(self.device, dtype=torch.float16)
+        self.image_proj_model_point.eval()
 
         self.load_posectrl()
         
@@ -897,8 +898,9 @@ class PoseControlNetV7:
 
     @torch.inference_mode()
     def get_vpmatrix_points(self, V_matrix, P_matrix, points, prompt_embeds):
-        image_prompt_embeds, trans_feat, importance = self.image_proj_model_point(points, V_matrix, P_matrix, prompt_embeds)
-        uncond_image_prompt_embeds = self.image_proj_model_point(torch.zeros_like(points),V_matrix, P_matrix)
+        with torch.no_grad():
+            image_prompt_embeds, trans_feat, importance = self.image_proj_model_point(points, V_matrix, P_matrix, prompt_embeds)
+            uncond_image_prompt_embeds, _, _ = self.image_proj_model_point(torch.zeros_like(points),V_matrix, P_matrix, prompt_embeds)
         return image_prompt_embeds, uncond_image_prompt_embeds
 
     def set_scale(self, scale):
@@ -1023,15 +1025,11 @@ class PoseControlNetV7:
                 do_classifier_free_guidance=True,
                 negative_prompt=negative_prompt,
             )
+            vpmatrix_points_embeds, uncon_vpmatrix_points_embeds= self.get_vpmatrix_points(V_matrix, P_matrix, points, prompt_embeds_)
+
             point_prompt_embeds = torch.cat([prompt_embeds_, vpmatrix_points_embeds], dim=1)
             point_negative_prompt_embeds = torch.cat([negative_prompt_embeds_,uncon_vpmatrix_points_embeds], dim=1)
 
-        vpmatrix_points_embeds, uncon_vpmatrix_points_embeds= self.get_vpmatrix_points(V_matrix, P_matrix, points, prompt_embeds)
-        bs_embed, seq_len, _ = vpmatrix_points_embeds.shape
-        vpmatrix_points_embeds = vpmatrix_points_embeds.repeat(1, num_samples, 1)
-        vpmatrix_points_embeds = vpmatrix_points_embeds.view(bs_embed * num_samples, seq_len, -1)
-        uncon_vpmatrix_points_embeds = uncon_vpmatrix_points_embeds.repeat(1, num_samples, 1)
-        uncon_vpmatrix_points_embeds = uncon_vpmatrix_points_embeds.view(bs_embed * num_samples, seq_len, -1)
 
         image = self.custom_inference(
             text_prompt_embeds=prompt_embeds_,
